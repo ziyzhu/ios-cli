@@ -49,11 +49,24 @@ function delay(seconds: number) {
 }
 
 async function streamHid(client: any, events: any[]): Promise<void> {
-  await new Promise<void>((res, rej) => {
-    const call = client.hid((err: any) => (err ? rej(err) : res()));
-    for (const e of events) call.write(e);
-    call.end();
-  });
+  // Retry on transient companion errors that surface right after app launch
+  // (e.g. "Mach port not connected, device may not be ready yet").
+  const MAX = 5;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await new Promise<void>((res, rej) => {
+        const call = client.hid((err: any) => (err ? rej(err) : res()));
+        for (const e of events) call.write(e);
+        call.end();
+      });
+      return;
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      const transient = /Mach port not connected|device may not be ready|UNAVAILABLE|INTERNAL/i.test(msg);
+      if (!transient || attempt >= MAX) throw err;
+      await new Promise((r) => setTimeout(r, 250 * attempt));
+    }
+  }
 }
 
 export async function tap(client: any, x: number, y: number, duration?: number) {

@@ -5,29 +5,45 @@ import { join } from "node:path";
 import * as simctl from "./simctl.ts";
 import * as companion from "./companion.ts";
 
-type Flags = Record<string, string | boolean>;
+type Flags = Record<string, string | boolean | string[]>;
 
-function parse(argv: string[]): { cmd: string; sub?: string; pos: string[]; flags: Flags } {
-  const [cmd, ...rest] = argv;
-  const pos: string[] = [];
+// Flags whose values may repeat; collected as string[].
+const MULTI_FLAGS = new Set(["env"]);
+
+function parse(argv: string[]): { cmd: string; pos: string[]; flags: Flags } {
   const flags: Flags = {};
-  let sub: string | undefined;
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i]!;
+  const positional: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
     if (a.startsWith("--")) {
       const k = a.slice(2);
-      const next = rest[i + 1];
-      if (next !== undefined && !next.startsWith("--")) { flags[k] = next; i++; }
-      else flags[k] = true;
-    } else if (sub === undefined && cmd && !cmd.startsWith("-")) {
-      // first positional may be a subcommand for grouped commands
-      if (pos.length === 0 && /^[a-z][a-z-]*$/.test(a) && cmd === "app") sub = a;
-      else pos.push(a);
+      const next = argv[i + 1];
+      const val = next !== undefined && !next.startsWith("--") ? (i++, next) : true;
+      if (MULTI_FLAGS.has(k)) {
+        const cur = flags[k];
+        const arr = Array.isArray(cur) ? cur : cur && typeof cur === "string" ? [cur] : [];
+        if (typeof val === "string") arr.push(val);
+        flags[k] = arr;
+      } else {
+        flags[k] = val;
+      }
     } else {
-      pos.push(a);
+      positional.push(a);
     }
   }
-  return { cmd: cmd ?? "", sub, pos, flags };
+  const cmd = positional.shift() ?? "";
+  return { cmd, pos: positional, flags };
+}
+
+function parseEnvFlag(v: Flags["env"]): Record<string, string> {
+  const arr = Array.isArray(v) ? v : typeof v === "string" ? [v] : [];
+  const out: Record<string, string> = {};
+  for (const kv of arr) {
+    const eq = kv.indexOf("=");
+    if (eq <= 0) fail(`--env must be KEY=VAL (got ${kv})`);
+    out[kv.slice(0, eq)] = kv.slice(eq + 1);
+  }
+  return out;
 }
 
 function ok(data: unknown): never {
@@ -41,7 +57,8 @@ function fail(msg: string): never {
 
 const HELP = `ios — agent-friendly iOS simulator CLI
 
-Globals: --udid <id|booted>  --companion <host:port>  (default: booted, localhost:10882)
+Globals (any position): --udid <id|booted>  --companion <host:port>
+  Defaults: booted, localhost:10882. Also reads IDB_UDID / IDB_COMPANION.
 
 Commands:
   list-devices                          list all simulators (json)
@@ -49,11 +66,19 @@ Commands:
   install <path>                        install .app/.ipa
   uninstall <bundle_id>
   launch <bundle_id> [args...]          returns {pid}
+                                          [--env KEY=VAL]... pass env to app
+                                          [--terminate-running] kill prior instance
+                                          [--wait-for-frontmost] wait until app is registered
+  run <bundle_id>                       build artifact → install → launch
+                                          [--app <path>] override DerivedData lookup
+                                          [--env KEY=VAL]...  [--wait-for-frontmost]
   terminate <bundle_id>
   logs [--follow] [--last 1m] [--predicate '<NSPredicate>']
   screenshot [--out file.png] [--base64]
   describe [--point x,y] [--screenshot] returns AX tree (+optional base64 png)
-  tap <x> <y> [--duration s]
+  find [--label <s>] [--role <s>] [--text <s>] [--all]
+                                        return {x,y,w,h,role,label} of first match (or array)
+  tap <x> <y> | --label <s>             [--duration s]
   swipe <x1> <y1> <x2> <y2> [--duration s] [--delta n]
   text "<string>"
   button <home|lock|siri|side_button|apple_pay> [--duration s]
@@ -88,7 +113,31 @@ async function main() {
     }
     case "launch": {
       if (!pos[0]) fail("launch requires <bundle_id>");
-      ok(simctl.launch(udid, pos[0], pos.slice(1)));
+      const env = parseEnvFlag(flags.env);
+      const result = simctl.launch(udid, pos[0], pos.slice(1), {
+        env,
+        terminateRunning: !!flags["terminate-running"],
+      });
+      if (flags["wait-for-frontmost"]) {
+        const ready = await simctl.waitForRunning(udid, pos[0]);
+        ok({ ...result, ready });
+      }
+      ok(result);
+    }
+    case "run": {
+      if (!pos[0]) fail("run requires <bundle_id>");
+      const bundle = pos[0];
+      const appPath = (flags.app as string) || simctl.findDerivedApp(bundle);
+      if (!appPath) fail(`No Debug build found for ${bundle} in DerivedData; pass --app <path>`);
+      try { simctl.terminate(udid, bundle); } catch {}
+      simctl.install(udid, appPath);
+      const env = parseEnvFlag(flags.env);
+      const result = simctl.launch(udid, bundle, pos.slice(1), { env });
+      if (flags["wait-for-frontmost"] !== false) {
+        const ready = await simctl.waitForRunning(udid, bundle);
+        ok({ ...result, app: appPath, ready });
+      }
+      ok({ ...result, app: appPath });
     }
     case "terminate": {
       if (!pos[0]) fail("terminate requires <bundle_id>");
@@ -124,10 +173,33 @@ async function main() {
       }
       ok({ accessibility: tree });
     }
+    case "find": {
+      const tree = await withClient((c) => companion.describe(c));
+      const matches = findInTree(tree, {
+        label: flags.label as string | undefined,
+        role: flags.role as string | undefined,
+        text: flags.text as string | undefined,
+      });
+      if (!flags.all) ok(matches[0] ?? null);
+      ok(matches);
+    }
     case "tap": {
-      const [x, y] = [num(pos[0], "x"), num(pos[1], "y")];
+      let x: number, y: number;
+      if (flags.label || flags.role || flags.text) {
+        const tree = await withClient((c) => companion.describe(c));
+        const m = findInTree(tree, {
+          label: flags.label as string | undefined,
+          role: flags.role as string | undefined,
+          text: flags.text as string | undefined,
+        })[0];
+        if (!m) fail(`No element matched`);
+        x = m.x + m.w / 2;
+        y = m.y + m.h / 2;
+      } else {
+        [x, y] = [num(pos[0], "x"), num(pos[1], "y")];
+      }
       await withClient((c) => companion.tap(c, x, y, flags.duration ? Number(flags.duration) : undefined));
-      ok({ ok: true });
+      ok({ ok: true, x, y });
     }
     case "swipe": {
       const [x1, y1, x2, y2] = [num(pos[0], "x1"), num(pos[1], "y1"), num(pos[2], "x2"), num(pos[3], "y2")];
@@ -167,6 +239,45 @@ function discoverCompanion(udid: string): string | undefined {
   if (entries.length === 0) return undefined;
   const want = udid !== "booted" ? entries.find((f) => f.startsWith(udid)) : entries[0];
   return want ? `${dir}/${want}` : undefined;
+}
+
+interface Match { x: number; y: number; w: number; h: number; role: string; label: string }
+
+function findInTree(
+  tree: unknown,
+  q: { label?: string; role?: string; text?: string },
+): Match[] {
+  const results: Match[] = [];
+  const wantLabel = q.label?.toLowerCase();
+  const wantRole = q.role?.toLowerCase();
+  const wantText = q.text?.toLowerCase();
+  const visit = (n: any) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) visit(c); return; }
+    const label = String(n.AXLabel ?? n.label ?? "");
+    const role = String(n.role ?? n.AXRole ?? "");
+    const value = String(n.AXValue ?? n.value ?? "");
+    const fr = n.frame ?? {};
+    const labelOk = wantLabel ? label.toLowerCase().includes(wantLabel) : true;
+    const roleOk = wantRole ? role.toLowerCase().includes(wantRole) : true;
+    const textOk = wantText ? (label + " " + value).toLowerCase().includes(wantText) : true;
+    if ((wantLabel || wantRole || wantText) && labelOk && roleOk && textOk &&
+        typeof fr.x === "number" && typeof fr.y === "number") {
+      results.push({ x: fr.x, y: fr.y, w: fr.width ?? 0, h: fr.height ?? 0, role, label });
+    }
+    if (n.children) visit(n.children);
+    // tree from `describe` is wrapped { accessibility: ... }; companion.describe returns the inner array/obj.
+    for (const v of Object.values(n)) if (v && typeof v === "object") visit(v);
+  };
+  visit(tree);
+  // dedupe by frame+label (Object.values traversal may revisit)
+  const seen = new Set<string>();
+  return results.filter((m) => {
+    const k = `${m.x},${m.y},${m.w},${m.h},${m.label}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 function parsePoint(s: string): { x: number; y: number } {

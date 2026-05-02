@@ -9,6 +9,11 @@ type Flags = Record<string, string | boolean | string[]>;
 
 // Flags whose values may repeat; collected as string[].
 const MULTI_FLAGS = new Set(["env"]);
+// Boolean flags never consume the next arg, so positional args can follow them.
+const BOOLEAN_FLAGS = new Set([
+  "follow", "base64", "screenshot", "all",
+  "terminate-running", "wait-for-frontmost", "help",
+]);
 
 function parse(argv: string[]): { cmd: string; pos: string[]; flags: Flags } {
   const flags: Flags = {};
@@ -18,7 +23,10 @@ function parse(argv: string[]): { cmd: string; pos: string[]; flags: Flags } {
     if (a.startsWith("--")) {
       const k = a.slice(2);
       const next = argv[i + 1];
-      const val = next !== undefined && !next.startsWith("--") ? (i++, next) : true;
+      const isBool = BOOLEAN_FLAGS.has(k);
+      const val = !isBool && next !== undefined && !next.startsWith("--")
+        ? (i++, next)
+        : true;
       if (MULTI_FLAGS.has(k)) {
         const cur = flags[k];
         const arr = Array.isArray(cur) ? cur : cur && typeof cur === "string" ? [cur] : [];
@@ -69,11 +77,12 @@ Commands:
                                           [--env KEY=VAL]... pass env to app
                                           [--terminate-running] kill prior instance
                                           [--wait-for-frontmost] wait until app is registered
-  run <bundle_id>                       build artifact → install → launch
+  run <bundle_id>                       build artifact → install → launch (waits for ready)
                                           [--app <path>] override DerivedData lookup
-                                          [--env KEY=VAL]...  [--wait-for-frontmost]
+                                          [--env KEY=VAL]...
   terminate <bundle_id>
   logs [--follow] [--last 1m] [--predicate '<NSPredicate>']
+                                        default returns {lines: [...]}; --follow streams raw text
   screenshot [--out file.png] [--base64]
   describe [--point x,y] [--screenshot] returns AX tree (+optional base64 png)
   find [--label <s>] [--role <s>] [--text <s>] [--all]
@@ -133,11 +142,8 @@ async function main() {
       simctl.install(udid, appPath);
       const env = parseEnvFlag(flags.env);
       const result = simctl.launch(udid, bundle, pos.slice(1), { env });
-      if (flags["wait-for-frontmost"] !== false) {
-        const ready = await simctl.waitForRunning(udid, bundle);
-        ok({ ...result, app: appPath, ready });
-      }
-      ok({ ...result, app: appPath });
+      const ready = await simctl.waitForRunning(udid, bundle);
+      ok({ ...result, app: appPath, ready });
     }
     case "terminate": {
       if (!pos[0]) fail("terminate requires <bundle_id>");
@@ -150,8 +156,8 @@ async function main() {
         process.exit(code);
       }
       const out = simctl.logShow(udid, { last: (flags.last as string) || "1m", predicate });
-      process.stdout.write(out);
-      process.exit(0);
+      const lines = out.split("\n").filter((l) => l.length > 0);
+      ok({ lines });
     }
     case "screenshot": {
       const out = (flags.out as string) || join(tmpdir(), `ios-cli-${Date.now()}.png`);
@@ -180,8 +186,8 @@ async function main() {
         role: flags.role as string | undefined,
         text: flags.text as string | undefined,
       });
-      if (!flags.all) ok(matches[0] ?? null);
-      ok(matches);
+      if (flags.all) ok(matches);
+      ok(matches[0] ?? null);
     }
     case "tap": {
       let x: number, y: number;

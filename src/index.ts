@@ -83,12 +83,16 @@ function parseSchemeEnv(schemePath: string, schemeName?: string): Record<string,
   return out;
 }
 
+// Pretty-print to a TTY for humans; stay compact when piped/redirected for agents.
+function encode(stream: NodeJS.WriteStream, data: unknown): string {
+  return stream.isTTY ? JSON.stringify(data, null, 2) : JSON.stringify(data);
+}
 function ok(data: unknown): never {
-  if (data !== undefined) process.stdout.write(JSON.stringify(data) + "\n");
+  if (data !== undefined) process.stdout.write(encode(process.stdout, data) + "\n");
   process.exit(0);
 }
 function fail(msg: string): never {
-  process.stderr.write(JSON.stringify({ error: msg }) + "\n");
+  process.stderr.write(encode(process.stderr, { error: msg }) + "\n");
   process.exit(1);
 }
 

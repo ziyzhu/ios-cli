@@ -12,7 +12,7 @@ const MULTI_FLAGS = new Set(["env"]);
 // Boolean flags never consume the next arg, so positional args can follow them.
 const BOOLEAN_FLAGS = new Set([
   "follow", "base64", "screenshot", "all",
-  "terminate-running", "wait-for-frontmost", "help",
+  "no-build", "no-install", "no-terminate", "no-wait", "help",
 ]);
 
 function parse(argv: string[]): { cmd: string; pos: string[]; flags: Flags } {
@@ -54,6 +54,35 @@ function parseEnvFlag(v: Flags["env"]): Record<string, string> {
   return out;
 }
 
+/**
+ * Read `LaunchAction → EnvironmentVariables` from an Xcode scheme. Accepts a
+ * direct `.xcscheme` file path, or an `.xcodeproj` directory (in which case
+ * the scheme inside `xcshareddata/xcschemes/` is picked — `<scheme>` if
+ * provided, otherwise the only one). Returns `KEY → VAL` for entries with
+ * `isEnabled="YES"`.
+ */
+function parseSchemeEnv(schemePath: string, schemeName?: string): Record<string, string> {
+  let resolved = schemePath;
+  if (existsSync(schemePath) && !schemePath.endsWith(".xcscheme")) {
+    const dir = join(schemePath, "xcshareddata", "xcschemes");
+    if (!existsSync(dir)) fail(`No xcshareddata/xcschemes in ${schemePath}`);
+    const schemes = readdirSync(dir).filter((f) => f.endsWith(".xcscheme"));
+    if (schemes.length === 0) fail(`No .xcscheme files in ${dir}`);
+    const pick = schemeName ? schemes.find((s) => s === `${schemeName}.xcscheme`) : (schemes.length === 1 ? schemes[0] : undefined);
+    if (!pick) fail(`Multiple schemes in ${dir}; pass --scheme-name <name>`);
+    resolved = join(dir, pick);
+  }
+  if (!existsSync(resolved)) fail(`Scheme not found: ${resolved}`);
+  const xml = readFileSync(resolved, "utf-8");
+  const launch = xml.match(/<LaunchAction[\s\S]*?<\/LaunchAction>/)?.[0] ?? "";
+  const out: Record<string, string> = {};
+  const re = /<EnvironmentVariable\s+key\s*=\s*"([^"]+)"\s+value\s*=\s*"([^"]*)"\s+isEnabled\s*=\s*"([^"]+)"/g;
+  for (const m of launch.matchAll(re)) {
+    if (m[3] === "YES") out[m[1]!] = m[2]!;
+  }
+  return out;
+}
+
 function ok(data: unknown): never {
   if (data !== undefined) process.stdout.write(JSON.stringify(data) + "\n");
   process.exit(0);
@@ -63,34 +92,61 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-const HELP = `ios — agent-friendly iOS simulator CLI
+const HELP = `sim-cli — agent-friendly iOS simulator CLI
 
-Globals (any position): --udid <id|booted>  --companion <host:port>
-  Defaults: booted, localhost:10882. Also reads IDB_UDID / IDB_COMPANION.
+USAGE
+  sim-cli [globals] <command> [args] [flags]
 
-Commands:
-  list-devices                          list all simulators (json)
-  list-apps                             list installed apps (json)
-  install <path>                        install .app/.ipa
-  uninstall <bundle_id>
-  launch <bundle_id> [args...]          returns {pid}
-                                          [--env KEY=VAL]... pass env to app
-                                          [--terminate-running] kill prior instance
-                                          [--wait-for-frontmost] wait until app is registered
-  run <bundle_id>                       build artifact → install → launch (waits for ready)
-                                          [--app <path>] override DerivedData lookup
-                                          [--env KEY=VAL]...
-  terminate <bundle_id>
-  logs [--follow] [--last 1m] [--predicate '<NSPredicate>']
-                                        default returns {lines: [...]}; --follow streams raw text
-  screenshot [--out file.png] [--base64]
-  describe [--point x,y] [--screenshot] returns AX tree (+optional base64 png)
-  find [--label <s>] [--role <s>] [--text <s>] [--all]
-                                        return {x,y,w,h,role,label} of first match (or array)
-  tap <x> <y> | --label <s>             [--duration s]
-  swipe <x1> <y1> <x2> <y2> [--duration s] [--delta n]
-  text "<string>"
-  button <home|lock|siri|side_button|apple_pay> [--duration s]
+GLOBALS                                 (defaults shown; also via env)
+  --udid <id|booted>                    target simulator           [IDB_UDID=booted]
+  --companion <host:port>               idb companion endpoint     [IDB_COMPANION=localhost:10882]
+
+DEVICE
+  list-devices                          list all simulators
+  list-apps                             list installed apps
+  uninstall <bundle_id>                 remove app
+
+APP LIFECYCLE
+  run <bundle_id> [args...]             build → install → terminate prior → launch → wait
+    --workspace <path>                  Xcode workspace            (auto-detected in CWD)
+    --project <path>                    Xcode project              (auto-detected in CWD)
+    --scheme-name <name>                build scheme               (auto-detected if only one)
+    --configuration Debug|Release       build configuration        (Debug)
+    --app <path>                        use prebuilt .app          (implies --no-build)
+    --no-build                          skip xcodebuild; use newest in DerivedData
+    --no-install                        use already-installed app
+    --no-terminate                      don't kill prior instance
+    --no-wait                           don't wait for frontmost
+    --env KEY=VAL                       app env var                (repeatable)
+    --scheme <path>                     read LaunchAction env from .xcscheme/.xcodeproj
+  openurl <url>                         open URL / deep link
+
+OBSERVE
+  screenshot                            capture screen as PNG
+    --out <file.png>                    output path                (tmp file)
+    --base64                            also embed base64 in JSON
+  describe                              return accessibility tree
+    --point x,y                         tree at a single point
+    --screenshot                        embed base64 PNG alongside
+  logs                                  default: {lines: [...]} from recent log
+    --follow                            stream raw text until SIGINT
+    --last <duration>                   lookback window            (1m)
+    --bundle <id>                       filter to one app (subsystem or process)
+    --predicate '<NSPredicate>'         additional filter (AND-ed with --bundle)
+
+INTERACT
+  tap <x> <y>                           tap at coordinates
+  tap --label|--role|--text <s>         tap centroid of matched AX element
+    --duration <s>                      hold duration
+  swipe <x1> <y1> <x2> <y2>             swipe between points
+    --duration <s>                      gesture duration
+    --delta <n>                         gesture granularity
+  type "<string>"                       send keystrokes to focused field
+  press <home|lock|siri|side_button|apple_pay>
+                                        press a hardware button
+    --duration <s>                      hold duration
+
+All commands write JSON to stdout on success and {"error": "..."} to stderr on failure.
 `;
 
 async function main() {
@@ -112,45 +168,59 @@ async function main() {
   switch (cmd) {
     case "list-devices": ok(simctl.listDevices());
     case "list-apps": ok(simctl.listApps(udid));
-    case "install": {
-      if (!pos[0]) fail("install requires <path>");
-      simctl.install(udid, pos[0]); ok({ ok: true });
-    }
     case "uninstall": {
       if (!pos[0]) fail("uninstall requires <bundle_id>");
       simctl.uninstall(udid, pos[0]); ok({ ok: true });
     }
-    case "launch": {
-      if (!pos[0]) fail("launch requires <bundle_id>");
-      const env = parseEnvFlag(flags.env);
-      const result = simctl.launch(udid, pos[0], pos.slice(1), {
-        env,
-        terminateRunning: !!flags["terminate-running"],
-      });
-      if (flags["wait-for-frontmost"]) {
-        const ready = await simctl.waitForRunning(udid, pos[0]);
-        ok({ ...result, ready });
-      }
-      ok(result);
-    }
     case "run": {
       if (!pos[0]) fail("run requires <bundle_id>");
       const bundle = pos[0];
+      const noBuild = !!flags["no-build"] || !!flags.app;
+      const noInstall = !!flags["no-install"];
+      const noTerminate = !!flags["no-terminate"];
+      const noWait = !!flags["no-wait"];
+
+      let built: { workspace?: string; project?: string; scheme?: string } | undefined;
+      if (!noBuild) {
+        const container = (flags.workspace || flags.project)
+          ? { workspace: flags.workspace as string | undefined, project: flags.project as string | undefined }
+          : simctl.detectXcodeProject();
+        if (!container.workspace && !container.project) {
+          fail("No .xcworkspace/.xcodeproj found in CWD; pass --workspace, --project, or --no-build");
+        }
+        const scheme = (flags["scheme-name"] as string | undefined) ?? simctl.detectScheme(container);
+        if (!scheme) fail("Could not auto-detect scheme; pass --scheme-name <name>");
+        try {
+          simctl.build({ ...container, scheme, configuration: flags.configuration as string | undefined });
+        } catch (e) {
+          fail((e as Error).message);
+        }
+        built = { ...container, scheme };
+      }
+
       const appPath = (flags.app as string) || simctl.findDerivedApp(bundle);
-      if (!appPath) fail(`No Debug build found for ${bundle} in DerivedData; pass --app <path>`);
-      try { simctl.terminate(udid, bundle); } catch {}
-      simctl.install(udid, appPath);
-      const env = parseEnvFlag(flags.env);
+      if (!noInstall && !appPath) fail(`No build artifact found for ${bundle} in DerivedData; pass --app <path>`);
+
+      if (!noTerminate) { try { simctl.terminate(udid, bundle); } catch {} }
+      if (!noInstall && appPath) simctl.install(udid, appPath);
+
+      const schemeEnv = flags.scheme ? parseSchemeEnv(flags.scheme as string, flags["scheme-name"] as string | undefined) : {};
+      const env = { ...schemeEnv, ...parseEnvFlag(flags.env) };
       const result = simctl.launch(udid, bundle, pos.slice(1), { env });
-      const ready = await simctl.waitForRunning(udid, bundle);
-      ok({ ...result, app: appPath, ready });
+      const ready = noWait ? undefined : await simctl.waitForRunning(udid, bundle);
+      ok({ ...result, app: appPath, ...(ready !== undefined ? { ready } : {}), ...(built ? { built } : {}) });
     }
-    case "terminate": {
-      if (!pos[0]) fail("terminate requires <bundle_id>");
-      simctl.terminate(udid, pos[0]); ok({ ok: true });
+    case "openurl": {
+      if (!pos[0]) fail("openurl requires <url>");
+      simctl.openurl(udid, pos[0]); ok({ ok: true });
     }
     case "logs": {
-      const predicate = flags.predicate as string | undefined;
+      const userPred = flags.predicate as string | undefined;
+      const bundle = flags.bundle as string | undefined;
+      const parts: string[] = [];
+      if (bundle) parts.push(`subsystem == "${bundle}" OR processImagePath CONTAINS "${bundle}"`);
+      if (userPred) parts.push(userPred);
+      const predicate = parts.length ? parts.map((p) => `(${p})`).join(" AND ") : undefined;
       if (flags.follow) {
         const code = await simctl.logStream(udid, predicate);
         process.exit(code);
@@ -160,7 +230,7 @@ async function main() {
       ok({ lines });
     }
     case "screenshot": {
-      const out = (flags.out as string) || join(tmpdir(), `ios-cli-${Date.now()}.png`);
+      const out = (flags.out as string) || join(tmpdir(), `sim-cli-${Date.now()}.png`);
       simctl.screenshot(udid, out);
       if (flags.base64) {
         const b64 = readFileSync(out).toString("base64");
@@ -172,22 +242,12 @@ async function main() {
       const point = flags.point ? parsePoint(flags.point as string) : undefined;
       const tree = await withClient((c) => companion.describe(c, point));
       if (flags.screenshot) {
-        const out = join(tmpdir(), `ios-cli-${Date.now()}.png`);
+        const out = join(tmpdir(), `sim-cli-${Date.now()}.png`);
         simctl.screenshot(udid, out);
         const b64 = readFileSync(out).toString("base64");
         ok({ accessibility: tree, screenshot: { path: out, base64: b64 } });
       }
       ok({ accessibility: tree });
-    }
-    case "find": {
-      const tree = await withClient((c) => companion.describe(c));
-      const matches = findInTree(tree, {
-        label: flags.label as string | undefined,
-        role: flags.role as string | undefined,
-        text: flags.text as string | undefined,
-      });
-      if (flags.all) ok(matches);
-      ok(matches[0] ?? null);
     }
     case "tap": {
       let x: number, y: number;
@@ -216,13 +276,13 @@ async function main() {
       );
       ok({ ok: true });
     }
-    case "text": {
-      if (!pos[0]) fail("text requires a string");
+    case "type": {
+      if (!pos[0]) fail("type requires a string");
       await withClient((c) => companion.text(c, pos.join(" ")));
       ok({ ok: true });
     }
-    case "button": {
-      if (!pos[0]) fail("button requires a name");
+    case "press": {
+      if (!pos[0]) fail("press requires a button name");
       await withClient((c) => companion.button(c, pos[0]!, flags.duration ? Number(flags.duration) : undefined));
       ok({ ok: true });
     }

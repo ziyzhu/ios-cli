@@ -73,6 +73,10 @@ export function terminate(udid: Udid, bundleId: string): void {
   ok(["terminate", udid, bundleId]);
 }
 
+export function openurl(udid: Udid, url: string): void {
+  ok(["openurl", udid, url]);
+}
+
 export function screenshot(udid: Udid, outPath: string): void {
   ok(["io", udid, "screenshot", outPath]);
 }
@@ -110,6 +114,69 @@ export function findDerivedApp(bundleId: string): string | undefined {
     if (idr.status === 0 && idr.stdout.trim() === bundleId) return app;
   }
   return undefined;
+}
+
+/** Auto-detect an .xcworkspace or .xcodeproj in the current directory. */
+export function detectXcodeProject(cwd: string = process.cwd()): { workspace?: string; project?: string } {
+  const r = spawnSync("bash", ["-c", `ls -1d "${cwd}"/*.xcworkspace "${cwd}"/*.xcodeproj 2>/dev/null`], { encoding: "utf8" });
+  const entries = (r.stdout ?? "").split("\n").filter(Boolean);
+  const ws = entries.find((e) => e.endsWith(".xcworkspace"));
+  if (ws) return { workspace: ws };
+  const proj = entries.find((e) => e.endsWith(".xcodeproj"));
+  if (proj) return { project: proj };
+  return {};
+}
+
+/** Use `xcodebuild -list -json` to find the only scheme; returns undefined if multiple. */
+export function detectScheme(opts: { workspace?: string; project?: string }): string | undefined {
+  const args = ["-list", "-json"];
+  if (opts.workspace) args.push("-workspace", opts.workspace);
+  else if (opts.project) args.push("-project", opts.project);
+  const r = spawnSync("xcodebuild", args, { encoding: "utf8" });
+  if (r.status !== 0) return undefined;
+  try {
+    const j = JSON.parse(r.stdout);
+    const schemes: string[] = j.workspace?.schemes ?? j.project?.schemes ?? [];
+    return schemes.length === 1 ? schemes[0] : undefined;
+  } catch { return undefined; }
+}
+
+function hasXcpretty(): boolean {
+  return spawnSync("bash", ["-c", "command -v xcpretty"], { encoding: "utf8" }).status === 0;
+}
+
+/** Run xcodebuild for the iphonesimulator SDK; throws with stderr on failure.
+ *  Pipes through xcpretty when available for cleaner output. */
+export function build(opts: {
+  workspace?: string;
+  project?: string;
+  scheme: string;
+  configuration?: string;
+}): void {
+  const args: string[] = [];
+  if (opts.workspace) args.push("-workspace", opts.workspace);
+  else if (opts.project) args.push("-project", opts.project);
+  args.push("-scheme", opts.scheme, "-configuration", opts.configuration ?? "Debug",
+    "-sdk", "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build");
+  const tail = (s: string) => s.split("\n").slice(-80).join("\n");
+
+  if (hasXcpretty()) {
+    // pipefail preserves xcodebuild's exit code through the pipe; xcpretty re-emits errors at the end.
+    const cmd = ["set -o pipefail", `xcodebuild ${args.map(shellQuote).join(" ")} | xcpretty`].join("; ");
+    const r = spawnSync("bash", ["-c", cmd], { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 });
+    if (r.status !== 0) throw new Error(`xcodebuild failed:\n${tail(r.stdout)}\n${tail(r.stderr)}`.trim());
+    return;
+  }
+
+  const r = spawnSync("xcodebuild", args, { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 });
+  if (r.status !== 0) {
+    // xcodebuild puts compile errors in stdout; include both streams so failures are diagnosable.
+    throw new Error(`xcodebuild failed:\n${tail(r.stdout)}\n${tail(r.stderr)}`.trim());
+  }
+}
+
+function shellQuote(s: string): string {
+  return /^[A-Za-z0-9_./=:-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 /** One-shot recent logs. */

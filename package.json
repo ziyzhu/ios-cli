@@ -1,11 +1,11 @@
 {
-  "name": "ios-cli",
+  "name": "sim-cli",
   "version": "0.1.0",
   "type": "module",
-  "bin": { "ios": "./src/index.ts" },
+  "bin": { "sim-cli": "./src/index.ts" },
   "scripts": {
     "start": "bun run src/index.ts",
-    "build": "bun build src/index.ts --compile --outfile dist/ios",
+    "build": "bun build src/index.ts --compile --outfile dist/sim-cli",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -58,7 +58,7 @@ Run `sim-cli --help` for the full grouped reference.
 | --- | --- |
 | `screenshot [--out file.png] [--base64]` | capture screen as PNG |
 | `describe [--point x,y] [--screenshot]` | accessibility tree (+ optional base64 PNG) |
-| `logs [--follow] [--last 1m] [--bundle <id>] [--predicate '<NSPredicate>']` | one-shot returns `{lines}`; `--follow` streams raw text. `--bundle` filters to one app's logs (subsystem or process); composable with `--predicate`. |
+| `logs [--follow] [--last 1m] [--bundle <id>]` | one-shot returns a JSON array of parsed `log show --style ndjson` entries (each has `timestamp`, `subsystem`, `category`, `processImagePath`, `eventMessage`, etc.). `--follow` streams ndjson, one JSON object per line. `--bundle` is a server-side filter shortcut; further filtering is best done with `jq`. |
 
 **Interact**
 

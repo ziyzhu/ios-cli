@@ -81,9 +81,10 @@ export function screenshot(udid: Udid, outPath: string): void {
   ok(["io", udid, "screenshot", outPath]);
 }
 
-/** Stream logs to stdout until SIGINT. */
-export function logStream(udid: Udid, predicate?: string): Promise<number> {
-  const args = ["simctl", "spawn", udid, "log", "stream", "--style", "compact"];
+/** Stream ndjson log entries to stdout until SIGINT (one JSON object per line). */
+export function logStream(udid: Udid, predicate?: string, opts: { verbose?: boolean } = {}): Promise<number> {
+  const args = ["simctl", "spawn", udid, "log", "stream", "--style", "ndjson"];
+  if (opts.verbose) args.push("--level", "debug"); // includes info+debug; default is "default" (notice+)
   if (predicate) args.push("--predicate", predicate);
   const child = spawn("xcrun", args, { stdio: "inherit" });
   return new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 0)));
@@ -145,46 +146,51 @@ function hasXcpretty(): boolean {
   return spawnSync("bash", ["-c", "command -v xcpretty"], { encoding: "utf8" }).status === 0;
 }
 
-/** Run xcodebuild for the iphonesimulator SDK; throws with stderr on failure.
- *  Pipes through xcpretty when available for cleaner output. */
-export function build(opts: {
+/** Run xcodebuild for the iphonesimulator SDK, streaming output to stderr in
+ *  real time so the JSON result on stdout stays clean. Pipes through xcpretty
+ *  when available. Throws on non-zero exit. */
+export async function build(opts: {
   workspace?: string;
   project?: string;
   scheme: string;
   configuration?: string;
-}): void {
+}): Promise<void> {
   const args: string[] = [];
   if (opts.workspace) args.push("-workspace", opts.workspace);
   else if (opts.project) args.push("-project", opts.project);
   args.push("-scheme", opts.scheme, "-configuration", opts.configuration ?? "Debug",
     "-sdk", "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build");
-  const tail = (s: string) => s.split("\n").slice(-80).join("\n");
 
-  if (hasXcpretty()) {
-    // pipefail preserves xcodebuild's exit code through the pipe; xcpretty re-emits errors at the end.
-    const cmd = ["set -o pipefail", `xcodebuild ${args.map(shellQuote).join(" ")} | xcpretty`].join("; ");
-    const r = spawnSync("bash", ["-c", cmd], { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 });
-    if (r.status !== 0) throw new Error(`xcodebuild failed:\n${tail(r.stdout)}\n${tail(r.stderr)}`.trim());
-    return;
-  }
+  // Both child stdout and child stderr go to OUR stderr (fd 2), keeping our stdout
+  // free for the final JSON result. With xcpretty, redirect its stdout to stderr
+  // inside the shell so it doesn't leak onto fd 1.
+  const stdio: ["ignore", 2, 2] = ["ignore", 2, 2];
+  const child = hasXcpretty()
+    ? spawn("bash", ["-c", `set -o pipefail; xcodebuild ${args.map(shellQuote).join(" ")} | xcpretty >&2`], { stdio })
+    : spawn("xcodebuild", args, { stdio });
 
-  const r = spawnSync("xcodebuild", args, { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 });
-  if (r.status !== 0) {
-    // xcodebuild puts compile errors in stdout; include both streams so failures are diagnosable.
-    throw new Error(`xcodebuild failed:\n${tail(r.stdout)}\n${tail(r.stderr)}`.trim());
-  }
+  const code: number = await new Promise((resolve) => child.on("exit", (c) => resolve(c ?? 1)));
+  if (code !== 0) throw new Error(`xcodebuild failed (exit ${code}); see build output above`);
 }
 
 function shellQuote(s: string): string {
   return /^[A-Za-z0-9_./=:-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-/** One-shot recent logs. */
-export function logShow(udid: Udid, opts: { last?: string; predicate?: string }): string {
-  const args = ["simctl", "spawn", udid, "log", "show", "--style", "compact"];
+/** One-shot recent logs as parsed entries. `log show --style ndjson` emits one
+ *  JSON object per line (after a header line), each with timestamp, subsystem,
+ *  category, processImagePath, eventMessage, etc. */
+export function logShow(udid: Udid, opts: { last?: string; predicate?: string; verbose?: boolean }): unknown[] {
+  const args = ["simctl", "spawn", udid, "log", "show", "--style", "ndjson"];
+  if (opts.verbose) args.push("--info", "--debug");
   if (opts.last) args.push("--last", opts.last);
   if (opts.predicate) args.push("--predicate", opts.predicate);
-  const r = spawnSync("xcrun", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync("xcrun", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   if (r.status !== 0) throw new Error(r.stderr?.trim() || "log show failed");
-  return r.stdout;
+  const entries: unknown[] = [];
+  for (const line of r.stdout.split("\n")) {
+    if (!line || line[0] !== "{") continue; // skip header / blank lines
+    try { entries.push(JSON.parse(line)); } catch { /* skip malformed */ }
+  }
+  return entries;
 }

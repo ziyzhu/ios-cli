@@ -13,15 +13,20 @@ const MULTI_FLAGS = new Set(["env"]);
 const BOOLEAN_FLAGS = new Set([
   "follow", "base64", "screenshot", "all",
   "no-build", "no-install", "no-terminate", "no-wait", "help",
+  "verbose",
 ]);
+// Single-dash short flags mapped to their long-flag equivalents.
+const SHORT_FLAGS: Record<string, string> = {
+  v: "verbose",
+};
 
 function parse(argv: string[]): { cmd: string; pos: string[]; flags: Flags } {
   const flags: Flags = {};
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a.startsWith("--")) {
-      const k = a.slice(2);
+    if (a.startsWith("--") || (a.length === 2 && a[0] === "-" && SHORT_FLAGS[a.slice(1)])) {
+      const k = a.startsWith("--") ? a.slice(2) : SHORT_FLAGS[a.slice(1)]!;
       const next = argv[i + 1];
       const isBool = BOOLEAN_FLAGS.has(k);
       const val = !isBool && next !== undefined && !next.startsWith("--")
@@ -132,11 +137,11 @@ OBSERVE
   describe                              return accessibility tree
     --point x,y                         tree at a single point
     --screenshot                        embed base64 PNG alongside
-  logs                                  default: {lines: [...]} from recent log
-    --follow                            stream raw text until SIGINT
+  logs                                  app-only by default; array of parsed ndjson entries
+    --follow                            stream ndjson (one entry per line) until SIGINT
     --last <duration>                   lookback window            (1m)
     --bundle <id>                       filter to one app (subsystem or process)
-    --predicate '<NSPredicate>'         additional filter (AND-ed with --bundle)
+    -v, --verbose                       include info+debug levels and Apple system subsystems
 
 INTERACT
   tap <x> <y>                           tap at coordinates
@@ -195,7 +200,7 @@ async function main() {
         const scheme = (flags["scheme-name"] as string | undefined) ?? simctl.detectScheme(container);
         if (!scheme) fail("Could not auto-detect scheme; pass --scheme-name <name>");
         try {
-          simctl.build({ ...container, scheme, configuration: flags.configuration as string | undefined });
+          await simctl.build({ ...container, scheme, configuration: flags.configuration as string | undefined });
         } catch (e) {
           fail((e as Error).message);
         }
@@ -219,19 +224,19 @@ async function main() {
       simctl.openurl(udid, pos[0]); ok({ ok: true });
     }
     case "logs": {
-      const userPred = flags.predicate as string | undefined;
       const bundle = flags.bundle as string | undefined;
-      const parts: string[] = [];
-      if (bundle) parts.push(`subsystem == "${bundle}" OR processImagePath CONTAINS "${bundle}"`);
-      if (userPred) parts.push(userPred);
-      const predicate = parts.length ? parts.map((p) => `(${p})`).join(" AND ") : undefined;
+      const verbose = !!flags.verbose;
+      // App-only by default — drop Apple framework chatter (WebKit, runningboard,
+      // CFNetwork, …). `-v` lifts the filter and also includes info/debug levels.
+      const clauses: string[] = [];
+      if (bundle) clauses.push(`(subsystem == "${bundle}" OR processImagePath CONTAINS "${bundle}")`);
+      if (!verbose) clauses.push(`NOT subsystem BEGINSWITH "com.apple."`);
+      const predicate = clauses.length ? clauses.join(" AND ") : undefined;
       if (flags.follow) {
-        const code = await simctl.logStream(udid, predicate);
+        const code = await simctl.logStream(udid, predicate, { verbose });
         process.exit(code);
       }
-      const out = simctl.logShow(udid, { last: (flags.last as string) || "1m", predicate });
-      const lines = out.split("\n").filter((l) => l.length > 0);
-      ok({ lines });
+      ok(simctl.logShow(udid, { last: (flags.last as string) || "1m", predicate, verbose }));
     }
     case "screenshot": {
       const out = (flags.out as string) || join(tmpdir(), `sim-cli-${Date.now()}.png`);

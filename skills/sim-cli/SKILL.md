@@ -38,8 +38,8 @@ From the repo root: `bun run src/index.ts <cmd>` during development, or `./dist/
 | Skip build, use existing artifact | `run <bundle_id> --no-build` or `run <bundle_id> --app <path>` |
 | Just relaunch installed app | `run <bundle_id> --no-build --no-install` |
 | Open a deep link / URL | `openurl <url>` |
-| Recent logs | `logs --last 1m [--bundle <id>]` → JSON array of entries |
-| Stream logs | `logs --follow [--bundle <id>]` → ndjson per line; blocks (use sparingly) |
+| Recent logs | `logs --last 1m` → JSON array of entries; filter client-side with `jq` |
+| Stream logs | `logs --follow` → ndjson per line; blocks (use sparingly) |
 | Pixel screenshot | `screenshot [--out file.png] [--base64]` |
 | AX tree | `describe [--point x,y] [--screenshot]` |
 | Tap (coords or label) | `tap <x> <y>` or `tap --label "Settings"` |
@@ -74,7 +74,7 @@ Build errors are surfaced: on `xcodebuild` failure, the last 80 lines of output 
 sim-cli run com.acme.MyApp                       # auto-detects workspace + scheme, builds, installs, launches
 sim-cli screenshot --out /tmp/after-launch.png
 sim-cli describe
-sim-cli logs --last 30s --bundle com.acme.MyApp
+sim-cli logs --last 30s | jq '.[] | select(.processImagePath | contains("MyApp"))'
 ```
 
 **Skip the build for a fast inner loop** — when source hasn't changed:
@@ -106,10 +106,9 @@ sim-cli openurl "myapp://orders/123"
 - `type` uses HID key events, so it types into whatever has keyboard focus. Tap the field first.
 - `tap --label/--role/--text` does substring matching against the AX tree (case-insensitive). If multiple elements match, the first is tapped — disambiguate by combining flags or using `describe` + `jq`.
 - `logs --follow` blocks until SIGINT — only use when the user explicitly asks to stream; otherwise use `--last`.
-- `logs --bundle <id>` builds a server-side predicate matching `subsystem == "<id>" OR processImagePath CONTAINS "<id>"` — much faster than reading the full log and filtering after.
-- For finer filtering (level, category, message contents), pipe entries through `jq`. Each entry has `timestamp`, `subsystem`, `category`, `processImagePath`, `eventMessage`, `messageType`, etc.
+- `logs` has no app-level server-side filter — Apple subsystem chatter is dropped by default (`-v` lifts that), but narrowing to a specific app or message is done client-side with `jq`. Each entry has `timestamp`, `subsystem`, `category`, `processImagePath`, `eventMessage`, `messageType`, etc.
   ```
-  sim-cli logs --last 5m --bundle com.acme.MyApp | jq '.[] | select(.messageType == "Error")'
+  sim-cli logs --last 5m | jq '.[] | select(.processImagePath | contains("MyApp")) | select(.messageType == "Error")'
   ```
 
 ## Parsing output

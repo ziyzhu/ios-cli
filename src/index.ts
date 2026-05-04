@@ -8,12 +8,13 @@ import * as companion from "./companion.ts";
 type Flags = Record<string, string | boolean | string[]>;
 
 // Flags whose values may repeat; collected as string[].
-const MULTI_FLAGS = new Set(["env"]);
+const MULTI_FLAGS = new Set(["env", "only", "skip"]);
 // Boolean flags never consume the next arg, so positional args can follow them.
 const BOOLEAN_FLAGS = new Set([
   "follow", "base64", "screenshot", "all",
   "no-build", "no-install", "no-terminate", "no-wait", "help",
   "verbose",
+  "build-only",
 ]);
 // Single-dash short flags mapped to their long-flag equivalents.
 const SHORT_FLAGS: Record<string, string> = {
@@ -137,10 +138,25 @@ OBSERVE
   describe                              return accessibility tree
     --point x,y                         tree at a single point
     --screenshot                        embed base64 PNG alongside
-  logs                                  app-only by default; array of parsed ndjson entries
+  logs                                  array of parsed ndjson entries; grep client-side
     --follow                            stream ndjson (one entry per line) until SIGINT
     --last <duration>                   lookback window            (1m)
-    --bundle <id>                       filter to one app (subsystem or process)
+    -v, --verbose                       include info+debug levels and Apple system subsystems
+
+TEST
+  test                                  xcodebuild test wrapper
+    --workspace <path>                  Xcode workspace            (auto-detected in CWD)
+    --project <path>                    Xcode project              (auto-detected in CWD)
+    --scheme-name <name>                build scheme               (auto-detected if only one)
+    --configuration Debug|Release       build configuration        (Debug)
+    --only <Bundle/Class[/test]>        -only-testing identifier   (repeatable)
+    --skip <Bundle/Class[/test]>        -skip-testing identifier   (repeatable)
+    --build-only                        build-for-testing only
+    --no-build                          test-without-building (assumes prior build)
+    --result-bundle <path>              .xcresult output           (tmp file)
+    --timeout <seconds>                 hard-kill xcodebuild after N seconds
+  test-clone-logs                       read logs from the XCTestDevices clone
+    --last <duration>                   lookback window            (1m)
     -v, --verbose                       include info+debug levels and Apple system subsystems
 
 INTERACT
@@ -219,19 +235,66 @@ async function main() {
       const ready = noWait ? undefined : await simctl.waitForRunning(udid, bundle);
       ok({ ...result, app: appPath, ...(ready !== undefined ? { ready } : {}), ...(built ? { built } : {}) });
     }
+    case "test": {
+      const container = (flags.workspace || flags.project)
+        ? { workspace: flags.workspace as string | undefined, project: flags.project as string | undefined }
+        : simctl.detectXcodeProject();
+      if (!container.workspace && !container.project) {
+        fail("No .xcworkspace/.xcodeproj found in CWD; pass --workspace or --project");
+      }
+      const scheme = (flags["scheme-name"] as string | undefined) ?? simctl.detectScheme(container);
+      if (!scheme) fail("Could not auto-detect scheme; pass --scheme-name <name>");
+      if (udid === "booted") {
+        // xcodebuild test resolves a "booted" destination differently from
+        // simctl; require an explicit UDID for reproducibility.
+        const booted = simctl.listDevices() as any;
+        const ids = collectBootedUdids(booted);
+        if (ids.length !== 1) fail(`Pass --udid <id>; found ${ids.length} booted simulator(s)`);
+      }
+      const destUdid = udid === "booted" ? collectBootedUdids(simctl.listDevices())[0]! : udid;
+
+      const only = asArray(flags.only);
+      const skip = asArray(flags.skip);
+      const result = await simctl.test({
+        ...container,
+        scheme: scheme!,
+        destinationUdid: destUdid,
+        configuration: flags.configuration as string | undefined,
+        only,
+        skip,
+        resultBundlePath: flags["result-bundle"] as string | undefined,
+        timeoutSec: flags.timeout ? Number(flags.timeout) : undefined,
+        buildOnly: !!flags["build-only"],
+        noBuild: !!flags["no-build"],
+      });
+      if (result.timedOut || result.failed > 0 || result.exitCode !== 0) {
+        process.stdout.write(encode(process.stdout, result) + "\n");
+        process.exit(result.timedOut ? 124 : (result.exitCode || 1));
+      }
+      ok(result);
+    }
+    case "test-clone-logs": {
+      const clone = simctl.findTestCloneUdid();
+      if (!clone) fail("No XCTestDevices clone found");
+      const verbose = !!flags.verbose;
+      const predicate = verbose ? undefined : `(subsystem == nil OR NOT subsystem BEGINSWITH "com.apple.")`;
+      ok(simctl.logShowFromClone(clone, { last: (flags.last as string) || "1m", predicate, verbose }));
+    }
     case "openurl": {
       if (!pos[0]) fail("openurl requires <url>");
       simctl.openurl(udid, pos[0]); ok({ ok: true });
     }
     case "logs": {
-      const bundle = flags.bundle as string | undefined;
       const verbose = !!flags.verbose;
-      // App-only by default — drop Apple framework chatter (WebKit, runningboard,
-      // CFNetwork, …). `-v` lifts the filter and also includes info/debug levels.
-      const clauses: string[] = [];
-      if (bundle) clauses.push(`(subsystem == "${bundle}" OR processImagePath CONTAINS "${bundle}")`);
-      if (!verbose) clauses.push(`NOT subsystem BEGINSWITH "com.apple."`);
-      const predicate = clauses.length ? clauses.join(" AND ") : undefined;
+      // Drop Apple framework chatter (WebKit, runningboard, CFNetwork, …) by
+      // default. `-v` lifts the filter and also includes info/debug levels.
+      // No app-level filtering — agents grep the result for what they need.
+      // NSPredicate quirk: `BEGINSWITH` on a nil subsystem yields nil, and
+      // `NOT nil` is nil (falsy) — so a bare `NOT subsystem BEGINSWITH ...`
+      // silently drops every entry without an explicit subsystem, which is
+      // most native-app output. The `subsystem == nil` clause keeps those.
+      // (ndjson renders nil as "" but the underlying predicate field is nil.)
+      const predicate = verbose ? undefined : `(subsystem == nil OR NOT subsystem BEGINSWITH "com.apple.")`;
       if (flags.follow) {
         const code = await simctl.logStream(udid, predicate, { verbose });
         process.exit(code);
@@ -298,6 +361,21 @@ async function main() {
     default:
       fail(`Unknown command: ${cmd}`);
   }
+}
+
+function asArray(v: Flags[string]): string[] {
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") return [v];
+  return [];
+}
+
+function collectBootedUdids(devices: any): string[] {
+  const out: string[] = [];
+  const buckets = devices?.devices ?? {};
+  for (const list of Object.values(buckets) as any[]) {
+    for (const d of list) if (d?.state === "Booted" && d.udid) out.push(d.udid);
+  }
+  return out;
 }
 
 function num(v: string | undefined, name: string): number {

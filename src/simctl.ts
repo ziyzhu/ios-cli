@@ -161,20 +161,165 @@ export async function build(opts: {
   args.push("-scheme", opts.scheme, "-configuration", opts.configuration ?? "Debug",
     "-sdk", "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build");
 
-  // Both child stdout and child stderr go to OUR stderr (fd 2), keeping our stdout
-  // free for the final JSON result. With xcpretty, redirect its stdout to stderr
-  // inside the shell so it doesn't leak onto fd 1.
-  const stdio: ["ignore", 2, 2] = ["ignore", 2, 2];
+  // Capture build output silently; only surface it (on stderr) if the build fails.
   const child = hasXcpretty()
-    ? spawn("bash", ["-c", `set -o pipefail; xcodebuild ${args.map(shellQuote).join(" ")} | xcpretty >&2`], { stdio })
-    : spawn("xcodebuild", args, { stdio });
+    ? spawn("bash", ["-c", `set -o pipefail; xcodebuild ${args.map(shellQuote).join(" ")} | xcpretty`], { stdio: ["ignore", "pipe", "pipe"] })
+    : spawn("xcodebuild", args, { stdio: ["ignore", "pipe", "pipe"] });
+
+  const chunks: Buffer[] = [];
+  child.stdout!.on("data", (c) => chunks.push(c));
+  child.stderr!.on("data", (c) => chunks.push(c));
 
   const code: number = await new Promise((resolve) => child.on("exit", (c) => resolve(c ?? 1)));
-  if (code !== 0) throw new Error(`xcodebuild failed (exit ${code}); see build output above`);
+  if (code !== 0) {
+    process.stderr.write(Buffer.concat(chunks));
+    throw new Error(`xcodebuild failed (exit ${code})`);
+  }
 }
 
 function shellQuote(s: string): string {
   return /^[A-Za-z0-9_./=:-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+const XCTEST_DEVICES_DIR = `${process.env.HOME ?? ""}/Library/Developer/XCTestDevices`;
+
+export interface TestOptions {
+  workspace?: string;
+  project?: string;
+  scheme: string;
+  destinationUdid: string;       // pinned sim UDID (or "booted")
+  configuration?: string;
+  only?: string[];               // -only-testing:<id>, repeatable
+  skip?: string[];               // -skip-testing:<id>, repeatable
+  resultBundlePath?: string;     // .xcresult output
+  timeoutSec?: number;           // hard kill xcodebuild after this many seconds
+  buildOnly?: boolean;           // build-for-testing
+  noBuild?: boolean;             // test-without-building (assumes prior build)
+}
+
+export interface TestResult {
+  passed: number;
+  failed: number;
+  failures: Array<{ test: string; message: string }>;
+  resultBundlePath?: string;
+  timedOut: boolean;
+  exitCode: number;
+}
+
+/** xcodebuild test wrapper. Streams stderr live, parses the .xcresult on
+ *  exit via `xcresulttool`, returns structured pass/fail summary. Hard-kills
+ *  the runner on `timeoutSec` so a hung test doesn't block forever. */
+export async function test(opts: TestOptions): Promise<TestResult> {
+  const args: string[] = [];
+  if (opts.workspace) args.push("-workspace", opts.workspace);
+  else if (opts.project) args.push("-project", opts.project);
+  args.push("-scheme", opts.scheme);
+  if (opts.configuration) args.push("-configuration", opts.configuration);
+  args.push("-destination", `platform=iOS Simulator,id=${opts.destinationUdid}`);
+  for (const o of opts.only ?? []) args.push(`-only-testing:${o}`);
+  for (const s of opts.skip ?? []) args.push(`-skip-testing:${s}`);
+
+  const resultBundle = opts.resultBundlePath
+    ?? `${process.env.TMPDIR ?? "/tmp"}sim-cli-test-${Date.now()}.xcresult`;
+  args.push("-resultBundlePath", resultBundle);
+
+  const sub = opts.buildOnly ? "build-for-testing" : opts.noBuild ? "test-without-building" : "test";
+  args.push(sub);
+
+  const child = spawn("xcodebuild", args, { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout!.on("data", (c) => process.stderr.write(c));
+  child.stderr!.on("data", (c) => process.stderr.write(c));
+
+  let timedOut = false;
+  let killer: NodeJS.Timeout | undefined;
+  if (opts.timeoutSec) {
+    killer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGTERM"); } catch {}
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 5000);
+    }, opts.timeoutSec * 1000);
+  }
+
+  const code: number = await new Promise((resolve) => child.on("exit", (c) => resolve(c ?? 1)));
+  if (killer) clearTimeout(killer);
+
+  return { ...summarizeXcresult(resultBundle), resultBundlePath: resultBundle, timedOut, exitCode: code };
+}
+
+/** Parse pass/fail summary from `xcresulttool get test-results tests`. */
+function summarizeXcresult(path: string): { passed: number; failed: number; failures: Array<{ test: string; message: string }> } {
+  const r = spawnSync("xcrun", ["xcresulttool", "get", "test-results", "tests", "--path", path], { encoding: "utf8" });
+  if (r.status !== 0 || !r.stdout) {
+    return { passed: 0, failed: 0, failures: [] };
+  }
+  let passed = 0, failed = 0;
+  const failures: Array<{ test: string; message: string }> = [];
+  try {
+    const root = JSON.parse(r.stdout);
+    const visit = (n: any, parent?: string) => {
+      if (!n || typeof n !== "object") return;
+      const name = n.name ?? parent;
+      if (n.nodeType === "Test Case") {
+        if (n.result === "Passed") passed++;
+        else if (n.result === "Failed") {
+          failed++;
+          const msg = collectFailures(n).join("; ") || "(no message)";
+          failures.push({ test: n.nodeIdentifier ?? name ?? "?", message: msg });
+        }
+      }
+      for (const c of n.children ?? []) visit(c, name);
+      for (const c of n.testNodes ?? []) visit(c, name);
+    };
+    visit(root);
+  } catch { /* fall through with zeros */ }
+  return { passed, failed, failures };
+}
+function collectFailures(node: any): string[] {
+  const out: string[] = [];
+  const walk = (n: any) => {
+    if (!n || typeof n !== "object") return;
+    if (n.nodeType === "Failure Message" && typeof n.name === "string") out.push(n.name);
+    for (const c of n.children ?? []) walk(c);
+  };
+  walk(node);
+  return out;
+}
+
+/** Locate the XCTestDevices clone created by xcodebuild test for the given
+ *  parent UDID. xcodebuild clones the destination sim under
+ *  `~/Library/Developer/XCTestDevices/<UUID>` and runs the host app inside
+ *  it; the visible sim never sees the test process. Returns the clone UDID
+ *  with the most recent mtime, or undefined if none exists yet. */
+export function findTestCloneUdid(): string | undefined {
+  const r = spawnSync("bash", ["-c",
+    `ls -1dt "${XCTEST_DEVICES_DIR}"/* 2>/dev/null | head -1`,
+  ], { encoding: "utf8" });
+  if (r.status !== 0) return undefined;
+  const dir = r.stdout.trim();
+  if (!dir) return undefined;
+  return dir.split("/").pop();
+}
+
+/** Read logs from an XCTestDevices clone. The clone lives outside the default
+ *  CoreSimulator devices set, so plain `xcrun simctl log show` can't find it;
+ *  must point `--set` at `~/Library/Developer/XCTestDevices`. */
+export function logShowFromClone(cloneUdid: string, opts: { last?: string; predicate?: string; verbose?: boolean }): unknown[] {
+  const args = ["simctl", "--set", XCTEST_DEVICES_DIR, "spawn", cloneUdid, "log", "show", "--style", "ndjson"];
+  if (opts.verbose) args.push("--info", "--debug");
+  if (opts.last) args.push("--last", opts.last);
+  if (opts.predicate) args.push("--predicate", opts.predicate);
+  const r = spawnSync("xcrun", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  if (r.status !== 0) throw new Error(r.stderr?.trim() || "log show failed");
+  const entries: unknown[] = [];
+  for (const line of r.stdout.split("\n")) {
+    if (!line || line[0] !== "{") continue;
+    try {
+      const obj = JSON.parse(line) as Record<string, unknown>;
+      if (!("eventMessage" in obj) && !("timestamp" in obj)) continue;
+      entries.push(obj);
+    } catch {}
+  }
+  return entries;
 }
 
 /** One-shot recent logs as parsed entries. `log show --style ndjson` emits one
@@ -190,7 +335,13 @@ export function logShow(udid: Udid, opts: { last?: string; predicate?: string; v
   const entries: unknown[] = [];
   for (const line of r.stdout.split("\n")) {
     if (!line || line[0] !== "{") continue; // skip header / blank lines
-    try { entries.push(JSON.parse(line)); } catch { /* skip malformed */ }
+    try {
+      const obj = JSON.parse(line) as Record<string, unknown>;
+      // `log show --style ndjson` emits a summary line like {"finished":1,"count":N}
+      // when the query ends; skip it so empty results return [] instead of [{count:0}].
+      if (!("eventMessage" in obj) && !("timestamp" in obj)) continue;
+      entries.push(obj);
+    } catch { /* skip malformed */ }
   }
   return entries;
 }

@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as simctl from "./simctl.ts";
 import * as companion from "./companion.ts";
+import { resolveCompanion } from "./resolve.ts";
 
 type Flags = Record<string, string | boolean | string[]>;
 
@@ -60,33 +61,28 @@ function parseEnvFlag(v: Flags["env"]): Record<string, string> {
   return out;
 }
 
-/**
- * Read `LaunchAction → EnvironmentVariables` from an Xcode scheme. Accepts a
- * direct `.xcscheme` file path, or an `.xcodeproj` directory (in which case
- * the scheme inside `xcshareddata/xcschemes/` is picked — `<scheme>` if
- * provided, otherwise the only one). Returns `KEY → VAL` for entries with
- * `isEnabled="YES"`.
- */
-function parseSchemeEnv(schemePath: string, schemeName?: string): Record<string, string> {
-  let resolved = schemePath;
-  if (existsSync(schemePath) && !schemePath.endsWith(".xcscheme")) {
-    const dir = join(schemePath, "xcshareddata", "xcschemes");
-    if (!existsSync(dir)) fail(`No xcshareddata/xcschemes in ${schemePath}`);
-    const schemes = readdirSync(dir).filter((f) => f.endsWith(".xcscheme"));
-    if (schemes.length === 0) fail(`No .xcscheme files in ${dir}`);
-    const pick = schemeName ? schemes.find((s) => s === `${schemeName}.xcscheme`) : (schemes.length === 1 ? schemes[0] : undefined);
-    if (!pick) fail(`Multiple schemes in ${dir}; pass --scheme-name <name>`);
-    resolved = join(dir, pick);
-  }
-  if (!existsSync(resolved)) fail(`Scheme not found: ${resolved}`);
-  const xml = readFileSync(resolved, "utf-8");
+// Read `LaunchAction` env vars and command-line args from an Xcode scheme.
+// `container` is a `.xcworkspace` or `.xcodeproj` path; `schemeName` picks the
+// .xcscheme under `xcshareddata/xcschemes/`. Only entries with isEnabled="YES"
+// are included.
+function parseScheme(container: string, schemeName: string): { env: Record<string, string>; args: string[] } {
+  const dir = join(container, "xcshareddata", "xcschemes");
+  if (!existsSync(dir)) return { env: {}, args: [] };
+  const path = join(dir, `${schemeName}.xcscheme`);
+  if (!existsSync(path)) return { env: {}, args: [] };
+  const xml = readFileSync(path, "utf-8");
   const launch = xml.match(/<LaunchAction[\s\S]*?<\/LaunchAction>/)?.[0] ?? "";
-  const out: Record<string, string> = {};
-  const re = /<EnvironmentVariable\s+key\s*=\s*"([^"]+)"\s+value\s*=\s*"([^"]*)"\s+isEnabled\s*=\s*"([^"]+)"/g;
-  for (const m of launch.matchAll(re)) {
-    if (m[3] === "YES") out[m[1]!] = m[2]!;
+  const env: Record<string, string> = {};
+  const envRe = /<EnvironmentVariable\s+key\s*=\s*"([^"]+)"\s+value\s*=\s*"([^"]*)"\s+isEnabled\s*=\s*"([^"]+)"/g;
+  for (const m of launch.matchAll(envRe)) {
+    if (m[3] === "YES") env[m[1]!] = m[2]!;
   }
-  return out;
+  const args: string[] = [];
+  const argRe = /<CommandLineArgument\s+argument\s*=\s*"([^"]*)"\s+isEnabled\s*=\s*"([^"]+)"/g;
+  for (const m of launch.matchAll(argRe)) {
+    if (m[2] === "YES") args.push(m[1]!);
+  }
+  return { env, args };
 }
 
 // Pretty-print to a TTY for humans; stay compact when piped/redirected for agents.
@@ -109,7 +105,16 @@ USAGE
 
 GLOBALS                                 (defaults shown; also via env)
   --udid <id|booted>                    target simulator           [IDB_UDID=booted]
-  --companion <host:port>               idb companion endpoint     [IDB_COMPANION=localhost:10882]
+                                        sim-cli owns one idb_companion per UDID and tracks it in
+                                        ~/.sim-cli/companions.json. First use spawns; later uses
+                                        reuse. No probing of unknown companions — that's how you
+                                        get silent wrong-device bugs. Pass -v to log resolution.
+                                        With "booted" and multiple booted sims, you must pass --udid.
+
+ADVANCED
+  --companion <host:port|unix:/sock>    pin a specific companion endpoint, bypassing autoresolve.
+                                        Used as-is, not validated. For remote companions (physical
+                                        devices, shared CI hosts). Local sim work uses --udid.  [IDB_COMPANION]
 
 DEVICE
   list-devices                          list all simulators
@@ -120,15 +125,16 @@ APP LIFECYCLE
   run <bundle_id> [args...]             build → install → terminate prior → launch → wait
     --workspace <path>                  Xcode workspace            (auto-detected in CWD)
     --project <path>                    Xcode project              (auto-detected in CWD)
-    --scheme-name <name>                build scheme               (auto-detected if only one)
+    --scheme <name>                     build scheme; also reads LaunchAction
+                                        env vars + args from the matching
+                                        .xcscheme                  (auto-detected if only one)
     --configuration Debug|Release       build configuration        (Debug)
     --app <path>                        use prebuilt .app          (implies --no-build)
     --no-build                          skip xcodebuild; use newest in DerivedData
     --no-install                        use already-installed app
     --no-terminate                      don't kill prior instance
     --no-wait                           don't wait for frontmost
-    --env KEY=VAL                       app env var                (repeatable)
-    --scheme <path>                     read LaunchAction env from .xcscheme/.xcodeproj
+    --env KEY=VAL                       app env var, overrides scheme value (repeatable)
   openurl <url>                         open URL / deep link
 
 OBSERVE
@@ -139,15 +145,16 @@ OBSERVE
     --point x,y                         tree at a single point
     --screenshot                        embed base64 PNG alongside
   logs                                  array of parsed ndjson entries; grep client-side
+                                        default: info+ level, Apple subsystems & subsystem-less entries dropped
     --follow                            stream ndjson (one entry per line) until SIGINT
     --last <duration>                   lookback window            (1m)
-    -v, --verbose                       include info+debug levels and Apple system subsystems
+    -v, --verbose                       include debug level + Apple system subsystems + subsystem-less entries
 
 TEST
   test                                  xcodebuild test wrapper
     --workspace <path>                  Xcode workspace            (auto-detected in CWD)
     --project <path>                    Xcode project              (auto-detected in CWD)
-    --scheme-name <name>                build scheme               (auto-detected if only one)
+    --scheme <name>                     build scheme               (auto-detected if only one)
     --configuration Debug|Release       build configuration        (Debug)
     --only <Bundle/Class[/test]>        -only-testing identifier   (repeatable)
     --skip <Bundle/Class[/test]>        -skip-testing identifier   (repeatable)
@@ -156,8 +163,9 @@ TEST
     --result-bundle <path>              .xcresult output           (tmp file)
     --timeout <seconds>                 hard-kill xcodebuild after N seconds
   test-clone-logs                       read logs from the XCTestDevices clone
+                                        same default filter as logs
     --last <duration>                   lookback window            (1m)
-    -v, --verbose                       include info+debug levels and Apple system subsystems
+    -v, --verbose                       include debug level + Apple system subsystems + subsystem-less entries
 
 INTERACT
   tap <x> <y>                           tap at coordinates
@@ -182,9 +190,25 @@ async function main() {
   }
   const { cmd, pos, flags } = parse(argv);
   const udid = (flags.udid as string) || process.env.IDB_UDID || "booted";
-  const target = (flags.companion as string) || process.env.IDB_COMPANION || discoverCompanion(udid) || "localhost:10882";
+  const explicitCompanion = (flags.companion as string) || process.env.IDB_COMPANION;
+  const verbose = !!flags.verbose;
+
+  // Resolve once per invocation, on first companion-touching command. Lazy so
+  // simctl-only commands (list-devices, list-apps, …) don't pay the probe cost.
+  let resolvedTarget: string | undefined;
+  const getTarget = async (): Promise<string> => {
+    if (resolvedTarget) return resolvedTarget;
+    const r = await resolveCompanion({
+      explicit: explicitCompanion,
+      udid,
+      log: (m) => { if (verbose) process.stderr.write(`sim-cli: ${m}\n`); },
+    });
+    resolvedTarget = r.endpoint;
+    return resolvedTarget;
+  };
 
   const withClient = async <T>(fn: (c: any) => Promise<T>): Promise<T> => {
+    const target = await getTarget();
     const c = companion.makeClient(target);
     try { return await fn(c); }
     finally { c.close?.(); }
@@ -205,16 +229,20 @@ async function main() {
       const noTerminate = !!flags["no-terminate"];
       const noWait = !!flags["no-wait"];
 
+      // Resolve project + scheme up front so we can read LaunchAction env/args
+      // from the .xcscheme regardless of whether we're building.
+      const container = (flags.workspace || flags.project)
+        ? { workspace: flags.workspace as string | undefined, project: flags.project as string | undefined }
+        : simctl.detectXcodeProject();
+      const scheme = (flags.scheme as string | undefined)
+        ?? (container.workspace || container.project ? simctl.detectScheme(container) : undefined);
+
       let built: { workspace?: string; project?: string; scheme?: string } | undefined;
       if (!noBuild) {
-        const container = (flags.workspace || flags.project)
-          ? { workspace: flags.workspace as string | undefined, project: flags.project as string | undefined }
-          : simctl.detectXcodeProject();
         if (!container.workspace && !container.project) {
           fail("No .xcworkspace/.xcodeproj found in CWD; pass --workspace, --project, or --no-build");
         }
-        const scheme = (flags["scheme-name"] as string | undefined) ?? simctl.detectScheme(container);
-        if (!scheme) fail("Could not auto-detect scheme; pass --scheme-name <name>");
+        if (!scheme) fail("Could not auto-detect scheme; pass --scheme <name>");
         try {
           await simctl.build({ ...container, scheme, configuration: flags.configuration as string | undefined });
         } catch (e) {
@@ -227,11 +255,19 @@ async function main() {
       if (!noInstall && !appPath) fail(`No build artifact found for ${bundle} in DerivedData; pass --app <path>`);
 
       if (!noTerminate) { try { simctl.terminate(udid, bundle); } catch {} }
-      if (!noInstall && appPath) simctl.install(udid, appPath);
+      if (!noInstall && appPath) {
+        // Concretize "booted" so the OS-version check picks the right device.
+        const installUdid = udid === "booted" ? collectBootedUdids(simctl.listDevices())[0] ?? udid : udid;
+        try { simctl.preflightInstallCompat(installUdid, appPath); }
+        catch (e) { fail((e as Error).message); }
+        simctl.install(udid, appPath);
+      }
 
-      const schemeEnv = flags.scheme ? parseSchemeEnv(flags.scheme as string, flags["scheme-name"] as string | undefined) : {};
-      const env = { ...schemeEnv, ...parseEnvFlag(flags.env) };
-      const result = simctl.launch(udid, bundle, pos.slice(1), { env });
+      const containerPath = container.workspace ?? container.project;
+      const fromScheme = (containerPath && scheme) ? parseScheme(containerPath, scheme) : { env: {}, args: [] };
+      const env = { ...fromScheme.env, ...parseEnvFlag(flags.env) };
+      const launchArgs = [...fromScheme.args, ...pos.slice(1)];
+      const result = simctl.launch(udid, bundle, launchArgs, { env });
       const ready = noWait ? undefined : await simctl.waitForRunning(udid, bundle);
       ok({ ...result, app: appPath, ...(ready !== undefined ? { ready } : {}), ...(built ? { built } : {}) });
     }
@@ -242,8 +278,8 @@ async function main() {
       if (!container.workspace && !container.project) {
         fail("No .xcworkspace/.xcodeproj found in CWD; pass --workspace or --project");
       }
-      const scheme = (flags["scheme-name"] as string | undefined) ?? simctl.detectScheme(container);
-      if (!scheme) fail("Could not auto-detect scheme; pass --scheme-name <name>");
+      const scheme = (flags.scheme as string | undefined) ?? simctl.detectScheme(container);
+      if (!scheme) fail("Could not auto-detect scheme; pass --scheme <name>");
       if (udid === "booted") {
         // xcodebuild test resolves a "booted" destination differently from
         // simctl; require an explicit UDID for reproducibility.
@@ -277,7 +313,10 @@ async function main() {
       const clone = simctl.findTestCloneUdid();
       if (!clone) fail("No XCTestDevices clone found");
       const verbose = !!flags.verbose;
-      const predicate = verbose ? undefined : `(subsystem == nil OR NOT subsystem BEGINSWITH "com.apple.")`;
+      // Same iOS 26 stream-parser quirk as `logs`; keep predicates aligned.
+      const predicate = verbose
+        ? undefined
+        : `subsystem MATCHES ".+" AND NOT subsystem BEGINSWITH "com.apple."`;
       ok(simctl.logShowFromClone(clone, { last: (flags.last as string) || "1m", predicate, verbose }));
     }
     case "openurl": {
@@ -286,15 +325,23 @@ async function main() {
     }
     case "logs": {
       const verbose = !!flags.verbose;
-      // Drop Apple framework chatter (WebKit, runningboard, CFNetwork, …) by
-      // default. `-v` lifts the filter and also includes info/debug levels.
-      // No app-level filtering — agents grep the result for what they need.
-      // NSPredicate quirk: `BEGINSWITH` on a nil subsystem yields nil, and
-      // `NOT nil` is nil (falsy) — so a bare `NOT subsystem BEGINSWITH ...`
-      // silently drops every entry without an explicit subsystem, which is
-      // most native-app output. The `subsystem == nil` clause keeps those.
-      // (ndjson renders nil as "" but the underlying predicate field is nil.)
-      const predicate = verbose ? undefined : `(subsystem == nil OR NOT subsystem BEGINSWITH "com.apple.")`;
+      // Default mode keeps signal high enough that an agent's own `os_log`
+      // calls aren't lost in the firehose:
+      //   • Drop Apple framework chatter (WebKit, runningboard, CFNetwork, …).
+      //   • Drop entries with no subsystem at all — printf-style fprintf from
+      //     random daemons. ~25% of unfiltered volume on a typical tap.
+      //   • Capture info+ (default `log stream` level is notice+, which hides
+      //     most app debugging logs).
+      // `-v` lifts every filter (Apple subsystems, empty subsystems, debug level)
+      // for the rare case the noise itself is what you're after.
+      // iOS 26 quirk: `log stream`'s predicate parser rejects `subsystem == nil`
+      // and (more surprisingly) `subsystem != ""` is also a no-op — empty/absent
+      // subsystems aren't filtered. `subsystem MATCHES ".+"` is the form that
+      // actually drops them without crashing the parser. The ndjson rendering
+      // confusingly shows "" for entries that the predicate sees as nil.
+      const predicate = verbose
+        ? undefined
+        : `subsystem MATCHES ".+" AND NOT subsystem BEGINSWITH "com.apple."`;
       if (flags.follow) {
         const code = await simctl.logStream(udid, predicate, { verbose });
         process.exit(code);
@@ -382,18 +429,6 @@ function num(v: string | undefined, name: string): number {
   if (v === undefined || isNaN(Number(v))) fail(`${name} must be a number`);
   return Number(v);
 }
-function discoverCompanion(udid: string): string | undefined {
-  // idb_companion writes /tmp/idb/<UDID>_companion.sock; pick a match or any if "booted".
-  const dir = "/tmp/idb";
-  if (!existsSync(dir)) return undefined;
-  let entries: string[];
-  try { entries = readdirSync(dir).filter((f) => f.endsWith("_companion.sock")); }
-  catch { return undefined; }
-  if (entries.length === 0) return undefined;
-  const want = udid !== "booted" ? entries.find((f) => f.startsWith(udid)) : entries[0];
-  return want ? `${dir}/${want}` : undefined;
-}
-
 interface Match { x: number; y: number; w: number; h: number; role: string; label: string }
 
 function findInTree(

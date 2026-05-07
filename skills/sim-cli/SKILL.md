@@ -55,15 +55,14 @@ From the repo root: `bun run src/index.ts <cmd>` during development, or `./dist/
 | --- | --- |
 | `--workspace <path>` | Xcode workspace (auto-detected in CWD if omitted) |
 | `--project <path>` | Xcode project (auto-detected in CWD if omitted) |
-| `--scheme-name <name>` | scheme to build (auto-detected if only one) |
+| `--scheme <name>` | scheme to build; also reads enabled `LaunchAction` env vars + args from the matching `.xcscheme` (auto-detected if only one) |
 | `--configuration Debug\|Release` | build configuration (default `Debug`) |
 | `--app <path>` | use prebuilt `.app`; implies `--no-build` |
 | `--no-build` | skip `xcodebuild`; use newest artifact in DerivedData |
 | `--no-install` | use the already-installed app |
 | `--no-terminate` | don't kill any prior instance |
 | `--no-wait` | don't wait for frontmost (`ready` omitted from output) |
-| `--env KEY=VAL` | pass env to launched app (repeatable) |
-| `--scheme <path>` | read enabled `LaunchAction` env from `.xcscheme` or `.xcodeproj` |
+| `--env KEY=VAL` | pass env to launched app, overrides scheme value (repeatable) |
 
 Build errors are surfaced: on `xcodebuild` failure, the last 80 lines of output land in the `{"error": "..."}` payload.
 

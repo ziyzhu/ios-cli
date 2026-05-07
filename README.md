@@ -49,7 +49,7 @@ Run `sim-cli --help` for the full grouped reference.
 
 | Command | Description |
 | --- | --- |
-| `run <bundle_id> [args...]` | build → install → terminate prior → launch → wait. Skip steps with `--no-build`, `--no-install`, `--no-terminate`, `--no-wait`. Use `--app <path>` for a prebuilt artifact. Auto-detects `.xcworkspace` / `.xcodeproj` + scheme; override with `--workspace`, `--project`, `--scheme-name`, `--configuration`. Pass app env via `--env KEY=VAL` (repeatable) or `--scheme <path>` to read enabled `LaunchAction` env from an `.xcscheme` / `.xcodeproj`. |
+| `run <bundle_id> [args...]` | build → install → terminate prior → launch → wait. Skip steps with `--no-build`, `--no-install`, `--no-terminate`, `--no-wait`. Use `--app <path>` for a prebuilt artifact. Auto-detects `.xcworkspace` / `.xcodeproj` + scheme; override with `--workspace`, `--project`, `--scheme`, `--configuration`. Enabled `LaunchAction` env vars + command-line args from the matching `.xcscheme` are picked up automatically; pass extra/override env via `--env KEY=VAL` (repeatable). |
 | `openurl <url>` | open a URL / deep link |
 
 **Observe**

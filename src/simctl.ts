@@ -33,6 +33,59 @@ export function install(udid: Udid, path: string): void {
   ok(["install", udid, path]);
 }
 
+/** Read MinimumOSVersion from an .app's Info.plist (e.g. "26.2"). Returns
+ *  undefined if the bundle, plist, or key is missing — caller decides whether
+ *  to warn or skip the preflight. */
+export function appMinimumOSVersion(appPath: string): string | undefined {
+  const plist = `${appPath}/Info.plist`;
+  const r = spawnSync("/usr/libexec/PlistBuddy", ["-c", "Print :MinimumOSVersion", plist], { encoding: "utf8" });
+  if (r.status !== 0) return undefined;
+  const v = r.stdout.trim();
+  return v || undefined;
+}
+
+/** Look up a sim's runtime version + name by UDID. "26.0.1" / "mango-qa". */
+export function deviceRuntime(udid: string): { name?: string; osVersion?: string } | undefined {
+  let devices: any;
+  try { devices = listDevices() as any; } catch { return undefined; }
+  for (const [runtimeId, list] of Object.entries(devices?.devices ?? {}) as [string, any[]][]) {
+    for (const d of list) {
+      if (d?.udid === udid) {
+        // runtimeId looks like "com.apple.CoreSimulator.SimRuntime.iOS-26-0-1";
+        // pull out the version segment.
+        const m = runtimeId.match(/iOS-(\d+(?:-\d+)*)/);
+        const osVersion = m ? m[1]!.replaceAll("-", ".") : undefined;
+        return { name: d.name, osVersion };
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Returns -1, 0, or 1 comparing dotted version strings ("26.0.1" vs "26.2"). */
+function cmpVersion(a: string, b: string): number {
+  const pa = a.split(".").map((s) => parseInt(s, 10) || 0);
+  const pb = b.split(".").map((s) => parseInt(s, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const da = pa[i] ?? 0, db = pb[i] ?? 0;
+    if (da !== db) return da < db ? -1 : 1;
+  }
+  return 0;
+}
+
+/** Throws a one-line, actionable error if the app's deployment target exceeds
+ *  the sim's runtime. simctl install otherwise emits a wall of
+ *  IXUserPresentableErrorDomain text that buries the version mismatch. */
+export function preflightInstallCompat(udid: string, appPath: string): void {
+  const need = appMinimumOSVersion(appPath);
+  if (!need) return;
+  const dev = deviceRuntime(udid);
+  if (!dev?.osVersion) return;
+  if (cmpVersion(dev.osVersion, need) >= 0) return;
+  const who = dev.name ? `${dev.name} (${udid})` : udid;
+  throw new Error(`incompatible: ${appPath.split("/").pop()} requires iOS ${need}, ${who} runs iOS ${dev.osVersion}; pick a sim on iOS ${need} or higher`);
+}
+
 export function uninstall(udid: Udid, bundleId: string): void {
   ok(["uninstall", udid, bundleId]);
 }
@@ -84,7 +137,10 @@ export function screenshot(udid: Udid, outPath: string): void {
 /** Stream ndjson log entries to stdout until SIGINT (one JSON object per line). */
 export function logStream(udid: Udid, predicate?: string, opts: { verbose?: boolean } = {}): Promise<number> {
   const args = ["simctl", "spawn", udid, "log", "stream", "--style", "ndjson"];
-  if (opts.verbose) args.push("--level", "debug"); // includes info+debug; default is "default" (notice+)
+  // `log stream` defaults to notice+ which silently drops `os_log_info`
+  // (most app-side debugging logs). Lift to info+ so they appear without -v;
+  // -v further opens the gate to debug.
+  args.push("--level", opts.verbose ? "debug" : "info");
   if (predicate) args.push("--predicate", predicate);
   const child = spawn("xcrun", args, { stdio: "inherit" });
   return new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 0)));
@@ -305,7 +361,8 @@ export function findTestCloneUdid(): string | undefined {
  *  must point `--set` at `~/Library/Developer/XCTestDevices`. */
 export function logShowFromClone(cloneUdid: string, opts: { last?: string; predicate?: string; verbose?: boolean }): unknown[] {
   const args = ["simctl", "--set", XCTEST_DEVICES_DIR, "spawn", cloneUdid, "log", "show", "--style", "ndjson"];
-  if (opts.verbose) args.push("--info", "--debug");
+  args.push("--info");
+  if (opts.verbose) args.push("--debug");
   if (opts.last) args.push("--last", opts.last);
   if (opts.predicate) args.push("--predicate", opts.predicate);
   const r = spawnSync("xcrun", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
@@ -327,7 +384,9 @@ export function logShowFromClone(cloneUdid: string, opts: { last?: string; predi
  *  category, processImagePath, eventMessage, etc. */
 export function logShow(udid: Udid, opts: { last?: string; predicate?: string; verbose?: boolean }): unknown[] {
   const args = ["simctl", "spawn", udid, "log", "show", "--style", "ndjson"];
-  if (opts.verbose) args.push("--info", "--debug");
+  // Mirror logStream defaults: include info+ entries by default; -v adds debug.
+  args.push("--info");
+  if (opts.verbose) args.push("--debug");
   if (opts.last) args.push("--last", opts.last);
   if (opts.predicate) args.push("--predicate", opts.predicate);
   const r = spawnSync("xcrun", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });

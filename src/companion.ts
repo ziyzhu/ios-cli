@@ -108,6 +108,32 @@ export async function button(client: any, name: string, duration?: number) {
   await streamHid(client, evs);
 }
 
+// ---- Companion identification ----
+
+/**
+ * Ask a companion which device it's bound to. `deadlineMs` bounds the wait so
+ * stale-socket/wrong-port probes fail fast (default 800 ms).
+ */
+export function describeTarget(
+  client: any,
+  deadlineMs = 800,
+): Promise<{ udid: string; name: string; state?: string; os_version?: string }> {
+  return new Promise((res, rej) => {
+    const deadline = new Date(Date.now() + deadlineMs);
+    client.describe({}, { deadline }, (err: any, resp: any) => {
+      if (err) return rej(err);
+      const t = resp?.target_description ?? resp?.companion ?? {};
+      // CompanionInfo only carries udid; TargetDescription has the richer fields.
+      res({
+        udid: String(resp?.companion?.udid ?? t.udid ?? ""),
+        name: String(t.name ?? ""),
+        state: t.state ? String(t.state) : undefined,
+        os_version: t.os_version ? String(t.os_version) : undefined,
+      });
+    });
+  });
+}
+
 // ---- Accessibility ----
 
 export function describe(

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, statSync, readdirSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import * as simctl from "./simctl.ts";
 import * as companion from "./companion.ts";
 import { resolveCompanion } from "./resolve.ts";
@@ -120,6 +120,10 @@ DEVICE
   list-devices                          list all simulators
   list-apps                             list installed apps
   uninstall <bundle_id>                 remove app
+  pull <bundle_id> <src> [dest]         copy a file/dir out of an app's container;
+                                        <src> is relative to the container root
+    --container app|data                container kind             (data)
+    --dest <dir>                        destination dir (alt. to positional)  (CWD)
 
 APP LIFECYCLE
   run <bundle_id> [args...]             build → install → terminate prior → launch → wait
@@ -144,10 +148,14 @@ OBSERVE
   describe                              return accessibility tree
     --point x,y                         tree at a single point
     --screenshot                        embed base64 PNG alongside
+  wait --label|--role|--text|--id <s>   poll the AX tree until a node matches;
+                                        prints the matched node, exits non-zero on timeout
+    --timeout <ms>                      give up after N ms          (30000)
   logs                                  array of parsed ndjson entries; grep client-side
                                         default: info+ level, Apple subsystems & subsystem-less entries dropped
     --follow                            stream ndjson (one entry per line) until SIGINT
     --last <duration>                   lookback window            (1m)
+    --subsystem <name>                  only entries from this os_log subsystem (exact match)
     -v, --verbose                       include debug level + Apple system subsystems + subsystem-less entries
 
 TEST
@@ -169,12 +177,21 @@ TEST
 
 INTERACT
   tap <x> <y>                           tap at coordinates
-  tap --label|--role|--text <s>         tap centroid of matched AX element
+  tap --label|--role|--text|--id <s>    tap centroid of matched AX element
+                                        --id matches accessibilityIdentifier (AXUniqueId).
+                                        When multiple nodes match, actionable roles
+                                        (AXButton, AXCell, …) win over AXStaticText.
+    --wait <ms>                         poll up to N ms for the matcher to hit
     --duration <s>                      hold duration
   swipe <x1> <y1> <x2> <y2>             swipe between points
     --duration <s>                      gesture duration
     --delta <n>                         gesture granularity
   type "<string>"                       send keystrokes to focused field
+  fill --label|--role|--text|--id <s> "<value>"
+                                        tap a text field, wait for focus, then type.
+                                        Bakes in the simulator's focus-animation settle.
+    --wait <ms>                         poll up to N ms for the matcher to hit
+    --settle <ms>                       focus-animation settle      (200)
   press <home|lock|siri|side_button|apple_pay>
                                         press a hardware button
     --duration <s>                      hold duration
@@ -221,6 +238,32 @@ async function main() {
       if (!pos[0]) fail("uninstall requires <bundle_id>");
       simctl.uninstall(udid, pos[0]); ok({ ok: true });
     }
+    case "pull": {
+      if (!pos[0]) fail("pull requires <bundle_id> <src> [dest]");
+      if (!pos[1]) fail("pull requires a <src> path relative to the app container");
+      const kind = (flags.container as string) || "data";
+      if (kind !== "app" && kind !== "data") fail("--container must be app or data");
+      let base: string;
+      try { base = simctl.getAppContainer(udid, pos[0], kind); }
+      catch (e) { fail((e as Error).message); }
+      const src = join(base, pos[1]);
+      if (!existsSync(src)) fail(`not found in ${kind} container: ${pos[1]}`);
+      const dest = pos[2] || (flags.dest as string) || process.cwd();
+      mkdirSync(dest, { recursive: true });
+      const files: string[] = [];
+      if (statSync(src).isDirectory()) {
+        // Copy the directory's contents (not the directory itself) into dest.
+        for (const name of readdirSync(src)) {
+          cpSync(join(src, name), join(dest, name), { recursive: true });
+          files.push(name);
+        }
+      } else {
+        const name = basename(src);
+        cpSync(src, join(dest, name));
+        files.push(name);
+      }
+      ok({ dest, files });
+    }
     case "run": {
       if (!pos[0]) fail("run requires <bundle_id>");
       const bundle = pos[0];
@@ -253,6 +296,12 @@ async function main() {
 
       const appPath = (flags.app as string) || simctl.findDerivedApp(bundle);
       if (!noInstall && !appPath) fail(`No build artifact found for ${bundle} in DerivedData; pass --app <path>`);
+
+      // install/launch require a booted sim; "booted" already implies one.
+      if (udid !== "booted") {
+        try { simctl.boot(udid); }
+        catch (e) { fail((e as Error).message); }
+      }
 
       if (!noTerminate) { try { simctl.terminate(udid, bundle); } catch {} }
       if (!noInstall && appPath) {
@@ -339,9 +388,15 @@ async function main() {
       // subsystems aren't filtered. `subsystem MATCHES ".+"` is the form that
       // actually drops them without crashing the parser. The ndjson rendering
       // confusingly shows "" for entries that the predicate sees as nil.
-      const predicate = verbose
-        ? undefined
-        : `subsystem MATCHES ".+" AND NOT subsystem BEGINSWITH "com.apple."`;
+      // `--subsystem` pins the query to one os_log subsystem (e.g. an app's
+      // own logs), overriding the default Apple-noise filter regardless of -v.
+      const subsystem = flags.subsystem as string | undefined;
+      if (subsystem && subsystem.includes('"')) fail("--subsystem must not contain quotes");
+      const predicate = subsystem
+        ? `subsystem == "${subsystem}"`
+        : verbose
+          ? undefined
+          : `subsystem MATCHES ".+" AND NOT subsystem BEGINSWITH "com.apple."`;
       if (flags.follow) {
         const code = await simctl.logStream(udid, predicate, { verbose });
         process.exit(code);
@@ -370,14 +425,17 @@ async function main() {
     }
     case "tap": {
       let x: number, y: number;
-      if (flags.label || flags.role || flags.text) {
-        const tree = await withClient((c) => companion.describe(c));
-        const m = findInTree(tree, {
-          label: flags.label as string | undefined,
-          role: flags.role as string | undefined,
-          text: flags.text as string | undefined,
-        })[0];
-        if (!m) fail(`No element matched`);
+      const q: Query = {
+        label: flags.label as string | undefined,
+        role: flags.role as string | undefined,
+        text: flags.text as string | undefined,
+        id: flags.id as string | undefined,
+      };
+      if (hasQuery(q)) {
+        const wait = flags.wait ? Number(flags.wait) : 0;
+        const m = await withClient(async (c) =>
+          wait > 0 ? await pollMatch(c, q, wait) : findInTree(await companion.describe(c), q)[0]);
+        if (!m) fail(wait > 0 ? `No element matched after ${wait}ms` : `No element matched`);
         x = m.x + m.w / 2;
         y = m.y + m.h / 2;
       } else {
@@ -385,6 +443,19 @@ async function main() {
       }
       await withClient((c) => companion.tap(c, x, y, flags.duration ? Number(flags.duration) : undefined));
       ok({ ok: true, x, y });
+    }
+    case "wait": {
+      const q: Query = {
+        label: flags.label as string | undefined,
+        role: flags.role as string | undefined,
+        text: flags.text as string | undefined,
+        id: flags.id as string | undefined,
+      };
+      if (!hasQuery(q)) fail("wait requires --label, --role, --text, or --id");
+      const timeout = flags.timeout ? Number(flags.timeout) : 30_000;
+      const m = await withClient((c) => pollMatch(c, q, timeout));
+      if (!m) fail(`wait timed out after ${timeout}ms`);
+      ok({ matched: m });
     }
     case "swipe": {
       const [x1, y1, x2, y2] = [num(pos[0], "x1"), num(pos[1], "y1"), num(pos[2], "x2"), num(pos[3], "y2")];
@@ -398,6 +469,27 @@ async function main() {
     case "type": {
       if (!pos[0]) fail("type requires a string");
       await withClient((c) => companion.text(c, pos.join(" ")));
+      ok({ ok: true });
+    }
+    case "fill": {
+      const q: Query = {
+        label: flags.label as string | undefined,
+        role: flags.role as string | undefined,
+        text: flags.text as string | undefined,
+        id: flags.id as string | undefined,
+      };
+      if (!hasQuery(q)) fail("fill requires --label, --role, --text, or --id");
+      if (!pos[0]) fail("fill requires a value");
+      const value = pos.join(" ");
+      const wait = flags.wait ? Number(flags.wait) : 0;
+      const settle = flags.settle ? Number(flags.settle) : 200;
+      await withClient(async (c) => {
+        const m = wait > 0 ? await pollMatch(c, q, wait) : findInTree(await companion.describe(c), q)[0];
+        if (!m) fail(wait > 0 ? `No element matched after ${wait}ms` : `No element matched`);
+        await companion.tap(c, m.x + m.w / 2, m.y + m.h / 2);
+        await new Promise((r) => setTimeout(r, settle));
+        await companion.text(c, value);
+      });
       ok({ ok: true });
     }
     case "press": {
@@ -429,29 +521,37 @@ function num(v: string | undefined, name: string): number {
   if (v === undefined || isNaN(Number(v))) fail(`${name} must be a number`);
   return Number(v);
 }
-interface Match { x: number; y: number; w: number; h: number; role: string; label: string }
+interface Match { x: number; y: number; w: number; h: number; role: string; label: string; id: string }
 
-function findInTree(
-  tree: unknown,
-  q: { label?: string; role?: string; text?: string },
-): Match[] {
+type Query = { label?: string; role?: string; text?: string; id?: string };
+
+function hasQuery(q: Query): boolean {
+  return !!(q.label || q.role || q.text || q.id);
+}
+
+function findInTree(tree: unknown, q: Query): Match[] {
   const results: Match[] = [];
   const wantLabel = q.label?.toLowerCase();
   const wantRole = q.role?.toLowerCase();
   const wantText = q.text?.toLowerCase();
+  const wantId = q.id;
   const visit = (n: any) => {
     if (!n || typeof n !== "object") return;
     if (Array.isArray(n)) { for (const c of n) visit(c); return; }
     const label = String(n.AXLabel ?? n.label ?? "");
     const role = String(n.role ?? n.AXRole ?? "");
     const value = String(n.AXValue ?? n.value ?? "");
+    const id = String(n.AXUniqueId ?? "");
     const fr = n.frame ?? {};
     const labelOk = wantLabel ? label.toLowerCase().includes(wantLabel) : true;
     const roleOk = wantRole ? role.toLowerCase().includes(wantRole) : true;
     const textOk = wantText ? (label + " " + value).toLowerCase().includes(wantText) : true;
-    if ((wantLabel || wantRole || wantText) && labelOk && roleOk && textOk &&
+    // accessibilityIdentifier is meant to be an exact key; substring match would
+    // produce surprises across nodes that share a prefix.
+    const idOk = wantId ? id === wantId : true;
+    if (hasQuery(q) && labelOk && roleOk && textOk && idOk &&
         typeof fr.x === "number" && typeof fr.y === "number") {
-      results.push({ x: fr.x, y: fr.y, w: fr.width ?? 0, h: fr.height ?? 0, role, label });
+      results.push({ x: fr.x, y: fr.y, w: fr.width ?? 0, h: fr.height ?? 0, role, label, id });
     }
     if (n.children) visit(n.children);
     // tree from `describe` is wrapped { accessibility: ... }; companion.describe returns the inner array/obj.
@@ -460,12 +560,27 @@ function findInTree(
   visit(tree);
   // dedupe by frame+label (Object.values traversal may revisit)
   const seen = new Set<string>();
-  return results.filter((m) => {
+  const deduped = results.filter((m) => {
     const k = `${m.x},${m.y},${m.w},${m.h},${m.label}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
   });
+  // Prefer actionable nodes over headings: when SwiftUI wraps a Button around
+  // a Text, both match the same label; the StaticText has no tap target.
+  const inert = (role: string) => role === "AXStaticText" || role === "";
+  return deduped.sort((a, b) => Number(inert(a.role)) - Number(inert(b.role)));
+}
+
+async function pollMatch(c: any, q: Query, timeoutMs: number): Promise<Match | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const tree = await companion.describe(c);
+    const m = findInTree(tree, q)[0];
+    if (m) return m;
+    if (Date.now() >= deadline) return undefined;
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }
 
 function parsePoint(s: string): { x: number; y: number } {

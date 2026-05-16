@@ -33,6 +33,15 @@ export function install(udid: Udid, path: string): void {
   ok(["install", udid, path]);
 }
 
+/** Boot the simulator if it isn't already. Idempotent — a sim that's already
+ *  booted is treated as success. */
+export function boot(udid: Udid): void {
+  const r = run(["boot", udid]);
+  if (r.code !== 0 && !/current state: Booted/.test(r.stderr)) {
+    throw new Error(r.stderr.trim() || "boot failed");
+  }
+}
+
 /** Read MinimumOSVersion from an .app's Info.plist (e.g. "26.2"). Returns
  *  undefined if the bundle, plist, or key is missing — caller decides whether
  *  to warn or skip the preflight. */
@@ -143,7 +152,19 @@ export function logStream(udid: Udid, predicate?: string, opts: { verbose?: bool
   args.push("--level", opts.verbose ? "debug" : "info");
   if (predicate) args.push("--predicate", predicate);
   const child = spawn("xcrun", args, { stdio: "inherit" });
+  // Forward termination so the underlying `log stream` doesn't outlive sim-cli
+  // when a parent process kills us (e.g. a test harness tailing logs).
+  const stop = () => { try { child.kill("SIGTERM"); } catch {} };
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
   return new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 0)));
+}
+
+/** Resolve a path inside an installed app's container. `kind`: "app" (the
+ *  .app bundle) or "data" (the sandbox — Documents/Library live here).
+ *  Throws if the app isn't installed. */
+export function getAppContainer(udid: Udid, bundleId: string, kind = "data"): string {
+  return ok(["get_app_container", udid, bundleId, kind]).trim();
 }
 
 /**

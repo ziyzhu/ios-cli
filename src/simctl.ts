@@ -1,4 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
+import { openSync, closeSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync, renameSync, cpSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
 
 export type Udid = string | "booted";
 
@@ -19,7 +22,6 @@ export function listDevices(): unknown {
 }
 
 export function listApps(udid: Udid): unknown {
-  // simctl listapps returns plist; parse via plutil to JSON
   const r = spawnSync(
     "bash",
     ["-c", `xcrun simctl listapps ${udid} | plutil -convert json -o - -`],
@@ -33,8 +35,14 @@ export function install(udid: Udid, path: string): void {
   ok(["install", udid, path]);
 }
 
-/** Boot the simulator if it isn't already. Idempotent — a sim that's already
- *  booted is treated as success. */
+export function uninstall(udid: Udid, bundleId: string): void {
+  ok(["uninstall", udid, bundleId]);
+}
+
+export function getAppContainer(udid: Udid, bundleId: string, kind = "data"): string {
+  return ok(["get_app_container", udid, bundleId, kind]).trim();
+}
+
 export function boot(udid: Udid): void {
   const r = run(["boot", udid]);
   if (r.code !== 0 && !/current state: Booted/.test(r.stderr)) {
@@ -42,9 +50,6 @@ export function boot(udid: Udid): void {
   }
 }
 
-/** Read MinimumOSVersion from an .app's Info.plist (e.g. "26.2"). Returns
- *  undefined if the bundle, plist, or key is missing — caller decides whether
- *  to warn or skip the preflight. */
 export function appMinimumOSVersion(appPath: string): string | undefined {
   const plist = `${appPath}/Info.plist`;
   const r = spawnSync("/usr/libexec/PlistBuddy", ["-c", "Print :MinimumOSVersion", plist], { encoding: "utf8" });
@@ -53,15 +58,12 @@ export function appMinimumOSVersion(appPath: string): string | undefined {
   return v || undefined;
 }
 
-/** Look up a sim's runtime version + name by UDID. "26.0.1" / "mango-qa". */
 export function deviceRuntime(udid: string): { name?: string; osVersion?: string } | undefined {
   let devices: any;
   try { devices = listDevices() as any; } catch { return undefined; }
   for (const [runtimeId, list] of Object.entries(devices?.devices ?? {}) as [string, any[]][]) {
     for (const d of list) {
       if (d?.udid === udid) {
-        // runtimeId looks like "com.apple.CoreSimulator.SimRuntime.iOS-26-0-1";
-        // pull out the version segment.
         const m = runtimeId.match(/iOS-(\d+(?:-\d+)*)/);
         const osVersion = m ? m[1]!.replaceAll("-", ".") : undefined;
         return { name: d.name, osVersion };
@@ -71,7 +73,6 @@ export function deviceRuntime(udid: string): { name?: string; osVersion?: string
   return undefined;
 }
 
-/** Returns -1, 0, or 1 comparing dotted version strings ("26.0.1" vs "26.2"). */
 function cmpVersion(a: string, b: string): number {
   const pa = a.split(".").map((s) => parseInt(s, 10) || 0);
   const pb = b.split(".").map((s) => parseInt(s, 10) || 0);
@@ -82,9 +83,6 @@ function cmpVersion(a: string, b: string): number {
   return 0;
 }
 
-/** Throws a one-line, actionable error if the app's deployment target exceeds
- *  the sim's runtime. simctl install otherwise emits a wall of
- *  IXUserPresentableErrorDomain text that buries the version mismatch. */
 export function preflightInstallCompat(udid: string, appPath: string): void {
   const need = appMinimumOSVersion(appPath);
   if (!need) return;
@@ -93,10 +91,6 @@ export function preflightInstallCompat(udid: string, appPath: string): void {
   if (cmpVersion(dev.osVersion, need) >= 0) return;
   const who = dev.name ? `${dev.name} (${udid})` : udid;
   throw new Error(`incompatible: ${appPath.split("/").pop()} requires iOS ${need}, ${who} runs iOS ${dev.osVersion}; pick a sim on iOS ${need} or higher`);
-}
-
-export function uninstall(udid: Udid, bundleId: string): void {
-  ok(["uninstall", udid, bundleId]);
 }
 
 export function launch(
@@ -110,12 +104,10 @@ export function launch(
   const flags: string[] = [];
   if (opts.terminateRunning) flags.push("--terminate-running-process");
   const out = ok(["launch", ...flags, udid, bundleId, ...args], env);
-  // "com.example.app: 12345"
   const m = out.match(/:\s*(\d+)/);
   return { pid: m ? parseInt(m[1]!, 10) : 0 };
 }
 
-/** Poll until the app is registered in the simulator's launchd, or timeout. */
 export async function waitForRunning(
   udid: Udid,
   bundleId: string,
@@ -143,34 +135,75 @@ export function screenshot(udid: Udid, outPath: string): void {
   ok(["io", udid, "screenshot", outPath]);
 }
 
-/** Stream ndjson log entries to stdout until SIGINT (one JSON object per line). */
-export function logStream(udid: Udid, predicate?: string, opts: { verbose?: boolean } = {}): Promise<number> {
-  const args = ["simctl", "spawn", udid, "log", "stream", "--style", "ndjson"];
-  // `log stream` defaults to notice+ which silently drops `os_log_info`
-  // (most app-side debugging logs). Lift to info+ so they appear without -v;
-  // -v further opens the gate to debug.
-  args.push("--level", opts.verbose ? "debug" : "info");
-  if (predicate) args.push("--predicate", predicate);
-  const child = spawn("xcrun", args, { stdio: "inherit" });
-  // Forward termination so the underlying `log stream` doesn't outlive sim-cli
-  // when a parent process kills us (e.g. a test harness tailing logs).
-  const stop = () => { try { child.kill("SIGTERM"); } catch {} };
-  process.on("SIGTERM", stop);
-  process.on("SIGINT", stop);
-  return new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 0)));
+const LOG_CAPTURE_DIR = join(homedir(), ".sim-cli", "logs");
+
+export function logCapturePaths(udid: Udid): { dir: string; file: string; pidFile: string } {
+  return {
+    dir: LOG_CAPTURE_DIR,
+    file: join(LOG_CAPTURE_DIR, `${udid}.log`),
+    pidFile: join(LOG_CAPTURE_DIR, `${udid}.pid`),
+  };
 }
 
-/** Resolve a path inside an installed app's container. `kind`: "app" (the
- *  .app bundle) or "data" (the sandbox — Documents/Library live here).
- *  Throws if the app isn't installed. */
-export function getAppContainer(udid: Udid, bundleId: string, kind = "data"): string {
-  return ok(["get_app_container", udid, bundleId, kind]).trim();
+export function stopLogCapture(udid: Udid): boolean {
+  const { pidFile } = logCapturePaths(udid);
+  if (!existsSync(pidFile)) return false;
+  let stopped = false;
+  try {
+    const pid = parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+    if (pid > 0) {
+      try { process.kill(-pid, "SIGTERM"); stopped = true; }
+      catch { try { process.kill(pid, "SIGTERM"); stopped = true; } catch {} }
+    }
+  } catch {}
+  try { rmSync(pidFile); } catch {}
+  return stopped;
 }
 
-/**
- * Locate the most recently built `.app` for `bundleId` in Xcode DerivedData.
- * Returns absolute path, or undefined if none matches.
- */
+export function startLogCapture(udid: Udid, opts: { verbose?: boolean; predicate?: string } = {}): { pid: number; file: string } {
+  const { dir, file, pidFile } = logCapturePaths(udid);
+  mkdirSync(dir, { recursive: true });
+  stopLogCapture(udid);
+  const fd = openSync(file, "w");
+  const args = ["simctl", "spawn", udid, "log", "stream", "--style", "ndjson", "--level", opts.verbose ? "debug" : "info"];
+  if (opts.predicate) args.push("--predicate", opts.predicate);
+  const child = spawn("xcrun", args, { detached: true, stdio: ["ignore", fd, fd] });
+  child.unref();
+  try { closeSync(fd); } catch {}
+  const pid = child.pid ?? 0;
+  writeFileSync(pidFile, String(pid));
+  return { pid, file };
+}
+
+export interface Capture {
+  udid: string;
+  file: string;
+  size: number;
+  modified: string;
+  capturing: boolean;
+  pid?: number;
+}
+
+export function listCaptures(): Capture[] {
+  if (!existsSync(LOG_CAPTURE_DIR)) return [];
+  const out: Capture[] = [];
+  for (const name of readdirSync(LOG_CAPTURE_DIR)) {
+    if (!name.endsWith(".log")) continue;
+    const udid = name.slice(0, -4);
+    const { file, pidFile } = logCapturePaths(udid);
+    let size = 0, modified = "";
+    try { const st = statSync(file); size = st.size; modified = st.mtime.toISOString(); } catch {}
+    let pid: number | undefined;
+    let capturing = false;
+    if (existsSync(pidFile)) {
+      const p = parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+      if (p > 0) { pid = p; try { process.kill(p, 0); capturing = true; } catch {} }
+    }
+    out.push({ udid, file, size, modified, capturing, ...(pid ? { pid } : {}) });
+  }
+  return out.sort((a, b) => (a.modified < b.modified ? 1 : -1));
+}
+
 export function findDerivedApp(bundleId: string): string | undefined {
   const home = process.env.HOME;
   if (!home) return undefined;
@@ -179,7 +212,6 @@ export function findDerivedApp(bundleId: string): string | undefined {
     "bash",
     [
       "-c",
-      // Find every Debug-iphonesimulator .app bundle, newest first.
       `find "${root}" -type d -path "*/Build/Products/Debug-iphonesimulator/*.app" -prune 2>/dev/null | while read -r p; do printf '%s\\t%s\\n' "$(stat -f %m "$p")" "$p"; done | sort -rn | cut -f2-`,
     ],
     { encoding: "utf8" },
@@ -194,7 +226,6 @@ export function findDerivedApp(bundleId: string): string | undefined {
   return undefined;
 }
 
-/** Auto-detect an .xcworkspace or .xcodeproj in the current directory. */
 export function detectXcodeProject(cwd: string = process.cwd()): { workspace?: string; project?: string } {
   const r = spawnSync("bash", ["-c", `ls -1d "${cwd}"/*.xcworkspace "${cwd}"/*.xcodeproj 2>/dev/null`], { encoding: "utf8" });
   const entries = (r.stdout ?? "").split("\n").filter(Boolean);
@@ -205,7 +236,6 @@ export function detectXcodeProject(cwd: string = process.cwd()): { workspace?: s
   return {};
 }
 
-/** Use `xcodebuild -list -json` to find the only scheme; returns undefined if multiple. */
 export function detectScheme(opts: { workspace?: string; project?: string }): string | undefined {
   const args = ["-list", "-json"];
   if (opts.workspace) args.push("-workspace", opts.workspace);
@@ -223,9 +253,6 @@ function hasXcpretty(): boolean {
   return spawnSync("bash", ["-c", "command -v xcpretty"], { encoding: "utf8" }).status === 0;
 }
 
-/** Run xcodebuild for the iphonesimulator SDK, streaming output to stderr in
- *  real time so the JSON result on stdout stays clean. Pipes through xcpretty
- *  when available. Throws on non-zero exit. */
 export async function build(opts: {
   workspace?: string;
   project?: string;
@@ -238,7 +265,6 @@ export async function build(opts: {
   args.push("-scheme", opts.scheme, "-configuration", opts.configuration ?? "Debug",
     "-sdk", "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build");
 
-  // Capture build output silently; only surface it (on stderr) if the build fails.
   const child = hasXcpretty()
     ? spawn("bash", ["-c", `set -o pipefail; xcodebuild ${args.map(shellQuote).join(" ")} | xcpretty`], { stdio: ["ignore", "pipe", "pipe"] })
     : spawn("xcodebuild", args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -258,170 +284,179 @@ function shellQuote(s: string): string {
   return /^[A-Za-z0-9_./=:-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-const XCTEST_DEVICES_DIR = `${process.env.HOME ?? ""}/Library/Developer/XCTestDevices`;
+export type ContainerKind = "app" | "data";
 
-export interface TestOptions {
-  workspace?: string;
-  project?: string;
-  scheme: string;
-  destinationUdid: string;       // pinned sim UDID (or "booted")
-  configuration?: string;
-  only?: string[];               // -only-testing:<id>, repeatable
-  skip?: string[];               // -skip-testing:<id>, repeatable
-  resultBundlePath?: string;     // .xcresult output
-  timeoutSec?: number;           // hard kill xcodebuild after this many seconds
-  buildOnly?: boolean;           // build-for-testing
-  noBuild?: boolean;             // test-without-building (assumes prior build)
+function containerPath(udid: Udid, bundleId: string, rel: string, kind: ContainerKind): string {
+  return join(getAppContainer(udid, bundleId, kind), rel);
 }
 
-export interface TestResult {
-  passed: number;
-  failed: number;
-  failures: Array<{ test: string; message: string }>;
-  resultBundlePath?: string;
-  timedOut: boolean;
-  exitCode: number;
-}
-
-/** xcodebuild test wrapper. Streams stderr live, parses the .xcresult on
- *  exit via `xcresulttool`, returns structured pass/fail summary. Hard-kills
- *  the runner on `timeoutSec` so a hung test doesn't block forever. */
-export async function test(opts: TestOptions): Promise<TestResult> {
-  const args: string[] = [];
-  if (opts.workspace) args.push("-workspace", opts.workspace);
-  else if (opts.project) args.push("-project", opts.project);
-  args.push("-scheme", opts.scheme);
-  if (opts.configuration) args.push("-configuration", opts.configuration);
-  args.push("-destination", `platform=iOS Simulator,id=${opts.destinationUdid}`);
-  for (const o of opts.only ?? []) args.push(`-only-testing:${o}`);
-  for (const s of opts.skip ?? []) args.push(`-skip-testing:${s}`);
-
-  const resultBundle = opts.resultBundlePath
-    ?? `${process.env.TMPDIR ?? "/tmp"}sim-cli-test-${Date.now()}.xcresult`;
-  args.push("-resultBundlePath", resultBundle);
-
-  const sub = opts.buildOnly ? "build-for-testing" : opts.noBuild ? "test-without-building" : "test";
-  args.push(sub);
-
-  const child = spawn("xcodebuild", args, { stdio: ["ignore", "pipe", "pipe"] });
-  child.stdout!.on("data", (c) => process.stderr.write(c));
-  child.stderr!.on("data", (c) => process.stderr.write(c));
-
-  let timedOut = false;
-  let killer: NodeJS.Timeout | undefined;
-  if (opts.timeoutSec) {
-    killer = setTimeout(() => {
-      timedOut = true;
-      try { child.kill("SIGTERM"); } catch {}
-      setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 5000);
-    }, opts.timeoutSec * 1000);
+export function fileLs(udid: Udid, bundleId: string, rel: string, kind: ContainerKind) {
+  const full = containerPath(udid, bundleId, rel, kind);
+  if (!existsSync(full)) throw new Error(`not found in ${kind} container: ${rel}`);
+  const st = statSync(full);
+  if (!st.isDirectory()) {
+    return [{ name: basename(full), isDir: false, size: st.size, modified: st.mtime.toISOString() }];
   }
-
-  const code: number = await new Promise((resolve) => child.on("exit", (c) => resolve(c ?? 1)));
-  if (killer) clearTimeout(killer);
-
-  return { ...summarizeXcresult(resultBundle), resultBundlePath: resultBundle, timedOut, exitCode: code };
+  return readdirSync(full).map((name) => {
+    const s = statSync(join(full, name));
+    return { name, isDir: s.isDirectory(), size: s.size, modified: s.mtime.toISOString() };
+  }).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Parse pass/fail summary from `xcresulttool get test-results tests`. */
-function summarizeXcresult(path: string): { passed: number; failed: number; failures: Array<{ test: string; message: string }> } {
-  const r = spawnSync("xcrun", ["xcresulttool", "get", "test-results", "tests", "--path", path], { encoding: "utf8" });
-  if (r.status !== 0 || !r.stdout) {
-    return { passed: 0, failed: 0, failures: [] };
+export function filePull(udid: Udid, bundleId: string, rel: string, dest: string, kind: ContainerKind): string[] {
+  const src = containerPath(udid, bundleId, rel, kind);
+  if (!existsSync(src)) throw new Error(`not found in ${kind} container: ${rel}`);
+  mkdirSync(dest, { recursive: true });
+  const files: string[] = [];
+  if (statSync(src).isDirectory()) {
+    for (const name of readdirSync(src)) {
+      cpSync(join(src, name), join(dest, name), { recursive: true });
+      files.push(name);
+    }
+  } else {
+    const name = basename(src);
+    cpSync(src, join(dest, name));
+    files.push(name);
   }
-  let passed = 0, failed = 0;
-  const failures: Array<{ test: string; message: string }> = [];
+  return files;
+}
+
+export function filePush(udid: Udid, bundleId: string, src: string, rel: string, kind: ContainerKind): void {
+  if (!existsSync(src)) throw new Error(`local source not found: ${src}`);
+  const dest = containerPath(udid, bundleId, rel, kind);
+  mkdirSync(dirname(dest), { recursive: true });
+  cpSync(src, dest, { recursive: true });
+}
+
+export function fileRm(udid: Udid, bundleId: string, rel: string, kind: ContainerKind): void {
+  const full = containerPath(udid, bundleId, rel, kind);
+  if (!existsSync(full)) throw new Error(`not found in ${kind} container: ${rel}`);
+  rmSync(full, { recursive: true, force: true });
+}
+
+export function fileMkdir(udid: Udid, bundleId: string, rel: string, kind: ContainerKind): void {
+  mkdirSync(containerPath(udid, bundleId, rel, kind), { recursive: true });
+}
+
+export function fileMv(udid: Udid, bundleId: string, src: string, dst: string, kind: ContainerKind): void {
+  const s = containerPath(udid, bundleId, src, kind);
+  const d = containerPath(udid, bundleId, dst, kind);
+  if (!existsSync(s)) throw new Error(`not found in ${kind} container: ${src}`);
+  mkdirSync(dirname(d), { recursive: true });
+  renameSync(s, d);
+}
+
+export function privacy(udid: Udid, action: "grant" | "revoke" | "reset", service: string, bundleId?: string): void {
+  const args = ["privacy", udid, action, service];
+  if (bundleId) args.push(bundleId);
+  ok(args);
+}
+
+export function setAppearance(udid: Udid, mode: "light" | "dark"): void {
+  ok(["ui", udid, "appearance", mode]);
+}
+
+export function clearKeychain(udid: Udid): void {
+  ok(["keychain", udid, "reset"]);
+}
+
+export function pushNotification(udid: Udid, bundleId: string | undefined, payloadPath: string): void {
+  const args = ["push", udid];
+  if (bundleId) args.push(bundleId);
+  args.push(payloadPath);
+  ok(args);
+}
+
+export function statusBarOverride(udid: Udid, opts: Record<string, string>): void {
+  const args = ["status_bar", udid, "override"];
+  for (const [k, v] of Object.entries(opts)) args.push(`--${k}`, v);
+  ok(args);
+}
+
+export function statusBarClear(udid: Udid): void {
+  ok(["status_bar", udid, "clear"]);
+}
+
+const VIDEO_DIR = join(homedir(), ".sim-cli", "videos");
+
+function videoPidFile(udid: Udid): string {
+  return join(VIDEO_DIR, `${udid}.json`);
+}
+
+export function startRecordVideo(udid: Udid, outPath: string): { pid: number; file: string } {
+  mkdirSync(VIDEO_DIR, { recursive: true });
+  stopRecordVideo(udid);
+  const child = spawn("xcrun", ["simctl", "io", udid, "recordVideo", "--force", outPath], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  const pid = child.pid ?? 0;
+  writeFileSync(videoPidFile(udid), JSON.stringify({ pid, file: outPath }));
+  return { pid, file: outPath };
+}
+
+export function stopRecordVideo(udid: Udid): { stopped: boolean; pid?: number; file?: string } {
+  const pidFile = videoPidFile(udid);
+  if (!existsSync(pidFile)) return { stopped: false };
+  let info: { pid: number; file: string };
+  try { info = JSON.parse(readFileSync(pidFile, "utf8")); }
+  catch { try { rmSync(pidFile); } catch {} return { stopped: false }; }
+  let stopped = false;
+  try { process.kill(info.pid, "SIGINT"); stopped = true; } catch {}
+  try { rmSync(pidFile); } catch {}
+  return { stopped, pid: info.pid, file: info.file };
+}
+
+const CRASH_DIR = join(homedir(), "Library", "Logs", "DiagnosticReports");
+
+export interface CrashReport {
+  name: string;
+  path: string;
+  size: number;
+  modified: string;
+  bundle?: string;
+  app?: string;
+  pid?: number;
+  os?: string;
+}
+
+function parseCrashHead(path: string): Partial<CrashReport> {
   try {
-    const root = JSON.parse(r.stdout);
-    const visit = (n: any, parent?: string) => {
-      if (!n || typeof n !== "object") return;
-      const name = n.name ?? parent;
-      if (n.nodeType === "Test Case") {
-        if (n.result === "Passed") passed++;
-        else if (n.result === "Failed") {
-          failed++;
-          const msg = collectFailures(n).join("; ") || "(no message)";
-          failures.push({ test: n.nodeIdentifier ?? name ?? "?", message: msg });
-        }
-      }
-      for (const c of n.children ?? []) visit(c, name);
-      for (const c of n.testNodes ?? []) visit(c, name);
+    const first = readFileSync(path, "utf8").split("\n", 1)[0] ?? "";
+    const meta = JSON.parse(first);
+    return {
+      bundle: meta.bundleID,
+      app: meta.app_name ?? meta.name,
+      pid: meta.pid,
+      os: meta.os_version,
     };
-    visit(root);
-  } catch { /* fall through with zeros */ }
-  return { passed, failed, failures };
-}
-function collectFailures(node: any): string[] {
-  const out: string[] = [];
-  const walk = (n: any) => {
-    if (!n || typeof n !== "object") return;
-    if (n.nodeType === "Failure Message" && typeof n.name === "string") out.push(n.name);
-    for (const c of n.children ?? []) walk(c);
-  };
-  walk(node);
-  return out;
+  } catch { return {}; }
 }
 
-/** Locate the XCTestDevices clone created by xcodebuild test for the given
- *  parent UDID. xcodebuild clones the destination sim under
- *  `~/Library/Developer/XCTestDevices/<UUID>` and runs the host app inside
- *  it; the visible sim never sees the test process. Returns the clone UDID
- *  with the most recent mtime, or undefined if none exists yet. */
-export function findTestCloneUdid(): string | undefined {
-  const r = spawnSync("bash", ["-c",
-    `ls -1dt "${XCTEST_DEVICES_DIR}"/* 2>/dev/null | head -1`,
-  ], { encoding: "utf8" });
-  if (r.status !== 0) return undefined;
-  const dir = r.stdout.trim();
-  if (!dir) return undefined;
-  return dir.split("/").pop();
-}
-
-/** Read logs from an XCTestDevices clone. The clone lives outside the default
- *  CoreSimulator devices set, so plain `xcrun simctl log show` can't find it;
- *  must point `--set` at `~/Library/Developer/XCTestDevices`. */
-export function logShowFromClone(cloneUdid: string, opts: { last?: string; predicate?: string; verbose?: boolean }): unknown[] {
-  const args = ["simctl", "--set", XCTEST_DEVICES_DIR, "spawn", cloneUdid, "log", "show", "--style", "ndjson"];
-  args.push("--info");
-  if (opts.verbose) args.push("--debug");
-  if (opts.last) args.push("--last", opts.last);
-  if (opts.predicate) args.push("--predicate", opts.predicate);
-  const r = spawnSync("xcrun", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-  if (r.status !== 0) throw new Error(r.stderr?.trim() || "log show failed");
-  const entries: unknown[] = [];
-  for (const line of r.stdout.split("\n")) {
-    if (!line || line[0] !== "{") continue;
-    try {
-      const obj = JSON.parse(line) as Record<string, unknown>;
-      if (!("eventMessage" in obj) && !("timestamp" in obj)) continue;
-      entries.push(obj);
-    } catch {}
+export function listCrashes(opts: { bundle?: string } = {}): CrashReport[] {
+  if (!existsSync(CRASH_DIR)) return [];
+  const out: CrashReport[] = [];
+  for (const name of readdirSync(CRASH_DIR)) {
+    if (!name.endsWith(".ips") && !name.endsWith(".crash")) continue;
+    const path = join(CRASH_DIR, name);
+    let st;
+    try { st = statSync(path); } catch { continue; }
+    const meta = parseCrashHead(path);
+    if (opts.bundle && meta.bundle !== opts.bundle) continue;
+    out.push({ name, path, size: st.size, modified: st.mtime.toISOString(), ...meta });
   }
-  return entries;
+  return out.sort((a, b) => (a.modified < b.modified ? 1 : -1));
 }
 
-/** One-shot recent logs as parsed entries. `log show --style ndjson` emits one
- *  JSON object per line (after a header line), each with timestamp, subsystem,
- *  category, processImagePath, eventMessage, etc. */
-export function logShow(udid: Udid, opts: { last?: string; predicate?: string; verbose?: boolean }): unknown[] {
-  const args = ["simctl", "spawn", udid, "log", "show", "--style", "ndjson"];
-  // Mirror logStream defaults: include info+ entries by default; -v adds debug.
-  args.push("--info");
-  if (opts.verbose) args.push("--debug");
-  if (opts.last) args.push("--last", opts.last);
-  if (opts.predicate) args.push("--predicate", opts.predicate);
-  const r = spawnSync("xcrun", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-  if (r.status !== 0) throw new Error(r.stderr?.trim() || "log show failed");
-  const entries: unknown[] = [];
-  for (const line of r.stdout.split("\n")) {
-    if (!line || line[0] !== "{") continue; // skip header / blank lines
-    try {
-      const obj = JSON.parse(line) as Record<string, unknown>;
-      // `log show --style ndjson` emits a summary line like {"finished":1,"count":N}
-      // when the query ends; skip it so empty results return [] instead of [{count:0}].
-      if (!("eventMessage" in obj) && !("timestamp" in obj)) continue;
-      entries.push(obj);
-    } catch { /* skip malformed */ }
-  }
-  return entries;
+export function showCrash(name: string): string {
+  const path = join(CRASH_DIR, name);
+  if (!existsSync(path)) throw new Error(`crash not found: ${name}`);
+  return readFileSync(path, "utf8");
+}
+
+export function deleteCrash(name: string): void {
+  const path = join(CRASH_DIR, name);
+  if (!existsSync(path)) throw new Error(`crash not found: ${name}`);
+  rmSync(path);
 }

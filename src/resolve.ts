@@ -10,11 +10,22 @@ const REGISTRY_DIR = join(homedir(), ".sim-cli");
 const REGISTRY_PATH = join(REGISTRY_DIR, "companions.json");
 
 type RegistryEntry = { endpoint: string; pid?: number; spawnedAt: number };
-type Registry = Record<string, RegistryEntry>; // udid → entry
+type Registry = Record<string, RegistryEntry>;
+
+export const STATE_DIR = REGISTRY_DIR;
 
 function loadRegistry(): Registry {
   try { return JSON.parse(readFileSync(REGISTRY_PATH, "utf-8")) as Registry; }
   catch { return {}; }
+}
+
+export function readRegistry(): Record<string, RegistryEntry & { alive: boolean }> {
+  const reg = loadRegistry();
+  const out: Record<string, RegistryEntry & { alive: boolean }> = {};
+  for (const [udid, e] of Object.entries(reg)) {
+    out[udid] = { ...e, alive: e.pid ? pidAlive(e.pid) : false };
+  }
+  return out;
 }
 
 function saveRegistry(reg: Registry) {
@@ -26,7 +37,6 @@ function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-/** Probe a candidate endpoint; returns the bound UDID, or null on failure/timeout. */
 async function probe(endpoint: string): Promise<string | null> {
   const c = companion.makeClient(endpoint);
   try {
@@ -39,7 +49,6 @@ async function probe(endpoint: string): Promise<string | null> {
   }
 }
 
-/** Pick a free TCP port by binding ephemeral and reading the assignment. */
 function freePort(): Promise<number> {
   return new Promise((res, rej) => {
     const srv = createServer();
@@ -58,8 +67,6 @@ function freePort(): Promise<number> {
 }
 
 function findIdbCompanion(): string | null {
-  // Prefer a $PATH lookup; fall back to the homebrew default so users don't
-  // need idb_companion on PATH for sim-cli to autospawn.
   const which = spawnSync("which", ["idb_companion"], { encoding: "utf8" });
   const found = which.stdout?.trim();
   if (found && existsSync(found)) return found;
@@ -68,7 +75,6 @@ function findIdbCompanion(): string | null {
   return null;
 }
 
-/** Spawn a detached idb_companion bound to udid:port; resolve once it answers describe. */
 async function spawnCompanion(udid: string, port: number): Promise<number> {
   const bin = findIdbCompanion();
   if (!bin) throw new Error("idb_companion not found on PATH or in /opt/homebrew/bin or /usr/local/bin; install fb-idb to enable autospawn");
@@ -78,7 +84,6 @@ async function spawnCompanion(udid: string, port: number): Promise<number> {
   });
   proc.unref();
   const pid = proc.pid!;
-  // Poll describe until ready or timeout.
   const endpoint = `localhost:${port}`;
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
@@ -90,7 +95,6 @@ async function spawnCompanion(udid: string, port: number): Promise<number> {
   throw new Error(`idb_companion didn't become ready within 8s (pid ${pid}, port ${port})`);
 }
 
-/** Resolve "booted" / a UDID to a concrete UDID. Throws on ambiguity / no match. */
 function resolveUdid(udid: string): string {
   if (udid && udid !== "booted") return udid;
   const devices = simctl.listDevices() as any;
@@ -105,28 +109,14 @@ function resolveUdid(udid: string): string {
 }
 
 export type ResolveOpts = {
-  /** Explicit endpoint from --companion / $IDB_COMPANION. Used as-is, no autospawn. */
   explicit?: string;
-  /** Resolved UDID (or "booted"); the resolver may concretize "booted" itself. */
   udid: string;
-  /** When false, never spawn a new companion. Default true. */
   autospawn?: boolean;
-  /** Quiet/verbose logging. */
   log?: (msg: string) => void;
 };
 
 export type Resolved = { endpoint: string; udid: string; spawned: boolean };
 
-/**
- * Pick (or start) an idb_companion bound to the requested device. There is
- * exactly one path: a per-UDID companion sim-cli started itself, tracked in
- * `~/.sim-cli/companions.json`. No probing of conventional ports, no socket
- * scanning, no fallback — those create silent wrong-device bugs when another
- * tool (idb, a stale companion) holds the conventional endpoint.
- *
- * `--companion` bypasses this entirely for advanced cases (remote companion,
- * custom CI rig); it's used as-is and not validated.
- */
 export async function resolveCompanion(opts: ResolveOpts): Promise<Resolved> {
   const log = opts.log ?? (() => {});
   const autospawn = opts.autospawn !== false;
@@ -137,13 +127,11 @@ export async function resolveCompanion(opts: ResolveOpts): Promise<Resolved> {
 
   const wantUdid = resolveUdid(opts.udid);
 
-  // Registry: a companion sim-cli previously spawned for this UDID.
   const reg = loadRegistry();
   const cached = reg[wantUdid];
   if (cached) {
     const stillOurs = cached.pid && pidAlive(cached.pid);
     if (stillOurs) {
-      // Verify it's still bound to the right UDID — guards against PID reuse.
       const got = await probe(cached.endpoint);
       if (got === wantUdid) return { endpoint: cached.endpoint, udid: wantUdid, spawned: false };
     }

@@ -20,15 +20,12 @@ const proto = grpc.loadPackageDefinition(pkgDef) as any;
 const CompanionService = proto.idb.CompanionService;
 
 export function makeClient(target: string): any {
-  // Accept "host:port", "unix:/path", "unix:///path", or a bare "/path/to.sock".
   if (target.startsWith("/")) target = `unix://${target}`;
   return new CompanionService(target, grpc.credentials.createInsecure(), {
     "grpc.max_receive_message_length": 64 * 1024 * 1024,
     "grpc.max_send_message_length": 64 * 1024 * 1024,
   });
 }
-
-// ---- HID helpers ----
 
 type Pt = { x: number; y: number };
 
@@ -49,8 +46,6 @@ function delay(seconds: number) {
 }
 
 async function streamHid(client: any, events: any[]): Promise<void> {
-  // Retry on transient companion errors that surface right after app launch
-  // (e.g. "Mach port not connected, device may not be ready yet").
   const MAX = 5;
   for (let attempt = 1; ; attempt++) {
     try {
@@ -101,19 +96,13 @@ const BUTTONS: Record<string, number> = {
 
 export async function button(client: any, name: string, duration?: number) {
   const code = BUTTONS[name.toLowerCase()];
-  if (code === undefined) throw new Error(`Unknown button: ${name}`);
+  if (code === undefined) throw new Error(`button must be one of: ${Object.keys(BUTTONS).join(", ")} (got: "${name}")`);
   const evs: any[] = [pressButton(code, DOWN)];
   if (duration && duration > 0) evs.push(delay(duration));
   evs.push(pressButton(code, UP));
   await streamHid(client, evs);
 }
 
-// ---- Companion identification ----
-
-/**
- * Ask a companion which device it's bound to. `deadlineMs` bounds the wait so
- * stale-socket/wrong-port probes fail fast (default 800 ms).
- */
 export function describeTarget(
   client: any,
   deadlineMs = 800,
@@ -123,7 +112,6 @@ export function describeTarget(
     client.describe({}, { deadline }, (err: any, resp: any) => {
       if (err) return rej(err);
       const t = resp?.target_description ?? resp?.companion ?? {};
-      // CompanionInfo only carries udid; TargetDescription has the richer fields.
       res({
         udid: String(resp?.companion?.udid ?? t.udid ?? ""),
         name: String(t.name ?? ""),
@@ -133,8 +121,6 @@ export function describeTarget(
     });
   });
 }
-
-// ---- Accessibility ----
 
 export function describe(
   client: any,

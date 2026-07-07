@@ -27,11 +27,14 @@ bun run src/index.ts --help
 ## Usage
 
 ```
-sim-cli [--udid <id|booted>] [--companion <host:port>] <command> [args]
+sim-cli [--device <name|udid|booted>] [--companion <host:port>] <command> [args]
 ```
 
-Defaults: `--udid booted`, `--companion localhost:10882`. Overridable via
-`IDB_UDID` / `IDB_COMPANION` env vars.
+Defaults: `--device booted`, `--companion localhost:10882`. Overridable via
+`SIM_DEVICE` / `IDB_COMPANION` env vars (`--udid` / `IDB_UDID` still accepted).
+`--device` takes a simulator name (e.g. `mango-qa`, set via `devices rename`),
+a UDID, or `booted`; names resolve case-insensitively, preferring a booted
+match when several runtimes share the name.
 
 Help is progressively disclosed: `sim-cli --help` prints a grouped command
 overview; `sim-cli help <command>` (or `sim-cli <command> --help`) discloses the
@@ -46,7 +49,8 @@ learn the surface without parsing help text.
 
 | Command | Description |
 | --- | --- |
-| `list-devices` | list all simulators |
+| `devices` | list all simulators (alias: `list-devices`) |
+| `devices rename <device> <new_name>` | rename a simulator; the name then works anywhere `--device` is accepted |
 | `list-apps` | list installed apps |
 | `uninstall <bundle_id>` | remove app |
 | `file <list\|pull\|push\|delete\|mkdir\|mv> <bundle_id> ...` | read/write the app container (`list`/`delete` accept `ls`/`rm` aliases); `--container app\|data` (default `data`), `--dest <dir>` for `file pull` |
@@ -63,7 +67,7 @@ learn the surface without parsing help text.
 | Command | Description |
 | --- | --- |
 | `config` | dump `~/.sim-cli/`: the `dir` path, the companion registry (per-UDID idb companions, each with `alive`), and `captures` (the log files `run` produced). |
-| `logs [--udid <id>]` | list captured log files from prior runs — `udid`, `file`, `size`, `modified`, `capturing`, and live `pid`. Read a file directly with `tail`/`jq`. `--udid` scopes to one sim. |
+| `logs [--device <name\|udid>]` | list captured log files from prior runs — `udid`, `file`, `size`, `modified`, `capturing`, and live `pid`. Read a file directly with `tail`/`jq`. `--device` scopes to one sim. |
 
 **Observe**
 

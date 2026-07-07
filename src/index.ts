@@ -108,7 +108,11 @@ async function main() {
     process.exit(0);
   }
   if (cmd === "agent-context") ok(agentContext());
-  const udid = (flags.udid as string) || process.env.IDB_UDID || "booted";
+  const deviceSpec = (flags.device as string) || (flags.udid as string)
+    || process.env.SIM_DEVICE || process.env.IDB_UDID || "booted";
+  let udid: string;
+  try { udid = simctl.resolveDeviceSpec(deviceSpec); }
+  catch (e) { fail((e as Error).message); }
   const explicitCompanion = (flags.companion as string) || process.env.IDB_COMPANION;
   const verbose = !!flags.verbose;
 
@@ -132,7 +136,19 @@ async function main() {
   };
 
   switch (cmd) {
-    case "list-devices": ok(simctl.listDevices());
+    case "list-devices":
+    case "devices": {
+      const sub = pos[0] ? subcommandName("devices", pos[0]) : "list";
+      if (sub === "list") ok(simctl.listDevices());
+      if (sub === "rename") {
+        if (!pos[1] || !pos[2]) fail("devices rename requires <device> <new_name>");
+        try {
+          const target = simctl.resolveDeviceSpec(pos[1]);
+          simctl.rename(target, pos[2]);
+          ok({ ok: true, udid: target, name: pos[2] });
+        } catch (e) { fail((e as Error).message); }
+      }
+    }
     case "list-apps": ok(simctl.listApps(udid));
     case "uninstall": {
       if (!pos[0]) fail("uninstall requires <bundle_id>");
@@ -302,7 +318,8 @@ async function main() {
     }
     case "logs": {
       const all = simctl.listCaptures();
-      ok(flags.udid ? all.filter((c) => c.udid === flags.udid) : all);
+      const filter = flags.device || flags.udid ? concreteUdid(udid) : undefined;
+      ok(filter ? all.filter((c) => c.udid === filter) : all);
     }
     case "openurl": {
       if (!pos[0]) fail("openurl requires <url>");

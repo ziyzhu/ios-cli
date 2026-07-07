@@ -103,8 +103,8 @@ function resolveUdid(udid: string): string {
   for (const list of Object.values(buckets) as any[]) {
     for (const d of list) if (d?.state === "Booted" && d.udid) booted.push(d.udid);
   }
-  if (booted.length === 0) throw new Error("no booted simulator; pass --udid <id> or boot one");
-  if (booted.length > 1) throw new Error(`multiple booted simulators (${booted.join(", ")}); pass --udid <id>`);
+  if (booted.length === 0) throw new Error("no booted simulator; pass --device <name|udid> or boot one");
+  if (booted.length > 1) throw new Error(`multiple booted simulators (${booted.join(", ")}); pass --device <name|udid>`);
   return booted[0]!;
 }
 

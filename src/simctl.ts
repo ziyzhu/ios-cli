@@ -21,6 +21,34 @@ export function listDevices(): unknown {
   return JSON.parse(out);
 }
 
+const UDID_RE = /^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$/;
+
+export function resolveDeviceSpec(spec: string): string {
+  if (spec === "booted" || UDID_RE.test(spec)) return spec;
+  const buckets = (listDevices() as any)?.devices ?? {};
+  const matches: { udid: string; name: string; state: string; runtime: string }[] = [];
+  for (const [runtimeId, list] of Object.entries(buckets) as [string, any[]][]) {
+    for (const d of list) {
+      if (d?.isAvailable !== false && d?.name?.toLowerCase() === spec.toLowerCase()) {
+        matches.push({ udid: d.udid, name: d.name, state: d.state, runtime: runtimeId.split(".").pop() ?? runtimeId });
+      }
+    }
+  }
+  if (matches.length === 1) return matches[0]!.udid;
+  const booted = matches.filter((m) => m.state === "Booted");
+  if (booted.length === 1) return booted[0]!.udid;
+  if (matches.length === 0) throw new Error(`no simulator named "${spec}"; see \`sim-cli devices\``);
+  throw new Error(
+    `"${spec}" matches ${matches.length} simulators: ` +
+    matches.map((m) => `${m.udid} [${m.runtime}, ${m.state}]`).join(", ") +
+    "; pass --device <udid>",
+  );
+}
+
+export function rename(udid: Udid, name: string): void {
+  ok(["rename", udid, name]);
+}
+
 export function listApps(udid: Udid): unknown {
   const r = spawnSync(
     "bash",

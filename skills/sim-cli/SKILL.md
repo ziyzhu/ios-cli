@@ -17,14 +17,14 @@ Before issuing any command, verify the environment:
    idb_companion --udid <UDID> --grpc-domain-sock /tmp/idb/<UDID>_companion.sock --only simulator &
    ```
    The CLI auto-discovers `/tmp/idb/<UDID>_companion.sock` when present, so you usually don't need `--companion`.
-3. If multiple sims are booted, never rely on `--udid booted` — pass the explicit UDID (or `export IDB_UDID=<udid>`).
+3. If multiple sims are booted, never rely on the `booted` default — pass `--device <name|udid>` (or `export SIM_DEVICE=<name|udid>`).
 4. Optional but recommended: `xcpretty` on PATH (`gem install xcpretty`). `run` pipes `xcodebuild` through it for cleaner build output; falls back to raw output otherwise.
 
 ## Invocation
 
 From the repo root: `bun run src/index.ts <cmd>` during development, or `./dist/sim-cli <cmd>` after `bun run build`. Globals can be in any position:
 
-- `--udid <id|booted>` (or `IDB_UDID`)
+- `--device <name|udid|booted>` (or `SIM_DEVICE`; legacy `--udid`/`IDB_UDID` also accepted) — names come from `devices rename`, resolve case-insensitively, and prefer a booted match when several runtimes share the name
 - `--companion <host:port|/path/to.sock>` (or `IDB_COMPANION`)
 
 Help is progressively disclosed across three layers — reach for the deepest one you need rather than memorizing the table below:
@@ -37,7 +37,8 @@ Help is progressively disclosed across three layers — reach for the deepest on
 
 | Goal | Command |
 | --- | --- |
-| Inventory devices | `list-devices` |
+| Inventory devices | `devices` (alias: `list-devices`) |
+| Name a device | `devices rename <device> <new_name>` — the name then works with `--device` |
 | What's installed | `list-apps` |
 | Remove app | `uninstall <bundle_id>` |
 | Read/write a container file | `file list\|pull\|push\|delete\|mkdir\|mv <bundle_id> ...` (`ls`/`rm` aliases accepted; `--container app\|data`, `--dest <dir>` for `file pull`) |
@@ -45,7 +46,7 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | Launch a prebuilt artifact | `run <bundle_id> --app <path>` |
 | Open a deep link / URL | `openurl <url>` |
 | Inspect `~/.sim-cli/` state | `config` → dir, companion registry, captured log files |
-| Captured log files | `logs [--udid <id>]` → list of `{udid,file,size,modified,capturing,pid}` |
+| Captured log files | `logs [--device <name\|udid>]` → list of `{udid,file,size,modified,capturing,pid}` |
 | Read a captured log | `tail -f ~/.sim-cli/logs/<udid>.log \| jq ...` (path comes from `logs`) |
 | Pixel screenshot | `screenshot [--out file.png] [--base64]` |
 | AX tree | `describe [--point x,y] [--screenshot]` |
@@ -103,7 +104,7 @@ sim-cli openurl "myapp://orders/123"
 ## Gotchas
 
 - `tap`, `swipe`, `type`, `press`, `describe` go through `idb_companion`. If they hang or return `UNAVAILABLE`, the companion for that UDID isn't running — start it (see prerequisites).
-- `--udid booted` errors out when more than one sim is booted. Prefer an explicit UDID in multi-sim setups.
+- The `booted` default errors out when more than one sim is booted. Prefer an explicit `--device <name|udid>` in multi-sim setups.
 - `run` waits for the app to register with launchd before returning (`ready: true/false`). If `ready` is false, the launch raced — re-launch.
 - `run` invokes `xcodebuild` every time unless you pass `--app <path>`. Build once, then `--app` for a fast inner loop.
 - AX-tree frames are in points, already in the same space `tap` expects — don't multiply by scale.

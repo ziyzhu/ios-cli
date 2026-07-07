@@ -48,13 +48,24 @@ interface Command {
 }
 
 export const GLOBALS: Flag[] = [
-  { name: "udid", type: "string", metavar: "id|booted", default: "booted", desc: "target simulator (env IDB_UDID). With multiple booted sims you must pass --udid." },
+  { name: "device", type: "string", metavar: "name|udid|booted", default: "booted", desc: "target simulator by name or UDID (env SIM_DEVICE; --udid/IDB_UDID also accepted). With multiple booted sims you must pass --device." },
   { name: "companion", type: "string", metavar: "host:port|unix:/sock", desc: "pin a companion endpoint, bypassing autoresolve (env IDB_COMPANION)" },
   { name: "verbose", type: "bool", desc: "log companion resolution to stderr (-v)" },
 ];
 
 export const COMMANDS: Command[] = [
-  { name: "list-devices", group: "DEVICE", summary: "list all simulators" },
+  {
+    name: "devices", group: "DEVICE", summary: "list simulators / manage device names",
+    aliases: ["list-devices"],
+    usage: "devices [rename <device> <new_name>]",
+    subcommands: [
+      { name: "list", summary: "list all simulators (default when no subcommand)" },
+      { name: "rename", args: [
+        { name: "device", required: true, desc: "name, UDID, or booted" },
+        { name: "new_name", required: true, desc: "new device name, usable with --device" },
+      ], summary: "rename a simulator" },
+    ],
+  },
   { name: "list-apps", group: "DEVICE", summary: "list installed apps" },
   {
     name: "uninstall", group: "DEVICE", summary: "remove an installed app",
@@ -122,7 +133,7 @@ export const COMMANDS: Command[] = [
   { name: "config", group: "STATE", summary: "dump ~/.sim-cli: companion registry + captured log files" },
   {
     name: "logs", group: "STATE", summary: "list captured log files from prior runs",
-    flags: [{ name: "udid", type: "string", metavar: "id", desc: "only this sim's capture" }],
+    flags: [{ name: "device", type: "string", metavar: "name|udid", desc: "only this sim's capture" }],
     notes: "Lists path, size, last-modified, and whether capture is still live.",
   },
   {

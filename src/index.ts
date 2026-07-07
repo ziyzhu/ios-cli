@@ -392,14 +392,40 @@ async function main() {
       const value = pos.join(" ");
       const wait = flags.wait ? Number(flags.wait) : 0;
       const settle = flags.settle ? Number(flags.settle) : 200;
-      await withClient(async (c) => {
+      const result = await withClient(async (c) => {
         const m = wait > 0 ? await pollMatch(c, q, wait) : findInTree(await companion.describe(c), q)[0];
         if (!m) fail(wait > 0 ? `No element matched after ${wait}ms` : `No element matched`);
         await companion.tap(c, m.x + m.w / 2, m.y + m.h / 2);
         await new Promise((r) => setTimeout(r, settle));
         await companion.text(c, value);
+        const refind = async (): Promise<Match | undefined> => {
+          const tree = await companion.describe(c);
+          if (m.id) {
+            const byId = findInTree(tree, { id: m.id })[0];
+            if (byId) return byId;
+          }
+          const byQuery = findInTree(tree, q)[0];
+          if (byQuery) return byQuery;
+          if (!m.role) return undefined;
+          return findInTree(tree, { role: m.role }).find((e) => Math.abs(e.x - m.x) < 2 && Math.abs(e.y - m.y) < 2);
+        };
+        const landed = (v: string | undefined) => !!v && v.toLowerCase().includes(value.toLowerCase());
+        let after = await refind();
+        let retried = false;
+        if (after && !landed(after.value) && after.value === m.value) {
+          retried = true;
+          await new Promise((r) => setTimeout(r, Math.max(settle * 4, 1000)));
+          await companion.text(c, value);
+          after = await refind();
+        }
+        return {
+          ok: true,
+          verified: landed(after?.value),
+          ...(after ? { value: after.value } : {}),
+          ...(retried ? { retried } : {}),
+        };
       });
-      ok({ ok: true });
+      ok(result);
     }
     case "press": {
       if (!pos[0]) fail("press requires a button name");
@@ -443,7 +469,7 @@ function num(v: string | undefined, name: string): number {
   if (v === undefined || isNaN(Number(v))) fail(`${name} must be a number`);
   return Number(v);
 }
-interface Match { x: number; y: number; w: number; h: number; role: string; label: string; id: string }
+interface Match { x: number; y: number; w: number; h: number; role: string; label: string; id: string; value: string }
 
 type Query = { label?: string; role?: string; text?: string; id?: string };
 
@@ -471,7 +497,7 @@ function findInTree(tree: unknown, q: Query): Match[] {
     const idOk = wantId ? id === wantId : true;
     if (hasQuery(q) && labelOk && roleOk && textOk && idOk &&
         typeof fr.x === "number" && typeof fr.y === "number") {
-      results.push({ x: fr.x, y: fr.y, w: fr.width ?? 0, h: fr.height ?? 0, role, label, id });
+      results.push({ x: fr.x, y: fr.y, w: fr.width ?? 0, h: fr.height ?? 0, role, label, id, value });
     }
     if (n.children) visit(n.children);
     for (const v of Object.values(n)) if (v && typeof v === "object") visit(v);

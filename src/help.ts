@@ -230,7 +230,7 @@ export const COMMANDS: Command[] = [
       { name: "wait", type: "string", metavar: "ms", desc: "poll up to N ms for the matcher to hit" },
       { name: "settle", type: "string", metavar: "ms", default: "200", desc: "focus-animation settle" },
     ],
-    notes: "Requires one of --label/--role/--text/--id. Bakes in the simulator's focus-animation settle.",
+    notes: "Requires one of --label/--role/--text/--id. After typing, re-reads the element and reports {verified, value}; if nothing landed (slow focus animation), waits max(4*settle, 1s) and retypes once, reporting {retried: true}. verified:false with an unchanged value means the text did not stick.",
   },
   {
     name: "press", group: "INTERACT", summary: "press a hardware button",

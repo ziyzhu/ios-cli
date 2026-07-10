@@ -103,6 +103,12 @@ export async function button(client: any, name: string, duration?: number) {
   await streamHid(client, evs);
 }
 
+export function simulateMemoryWarning(client: any): Promise<void> {
+  return new Promise((res, rej) => {
+    client.simulate_memory_warning({}, (err: any) => (err ? rej(err) : res()));
+  });
+}
+
 export function describeTarget(
   client: any,
   deadlineMs = 800,

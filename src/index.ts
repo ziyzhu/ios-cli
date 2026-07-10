@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as simctl from "./simctl.ts";
+import * as proc from "./process.ts";
 import * as companion from "./companion.ts";
 import * as resolve from "./resolve.ts";
 import { overview, commandHelp, agentContext, resolveSubcommand, resolveCommand, enumError, ENUMS } from "./help.ts";
@@ -11,7 +12,7 @@ type Flags = Record<string, string | boolean | string[]>;
 
 const MULTI_FLAGS = new Set(["env"]);
 const BOOLEAN_FLAGS = new Set([
-  "base64", "screenshot", "help", "verbose",
+  "base64", "screenshot", "help", "verbose", "watch", "vc",
 ]);
 const SHORT_FLAGS: Record<string, string> = {
   v: "verbose",
@@ -133,6 +134,12 @@ async function main() {
     const c = companion.makeClient(target);
     try { return await fn(c); }
     finally { c.close?.(); }
+  };
+
+  const resolveAppPid = (bundle: string): { udid: string; pid: number } => {
+    const target = udid === "booted" ? soleBootedUdid() : udid;
+    try { return { udid: target, pid: proc.resolvePid(target, bundle) }; }
+    catch (e) { fail((e as Error).message); }
   };
 
   switch (cmd) {
@@ -320,6 +327,71 @@ async function main() {
         try { simctl.deleteCrash(pos[1]); ok({ ok: true }); }
         catch (e) { fail((e as Error).message); }
       }
+    }
+    case "stats": {
+      if (!pos[0]) fail("stats requires <bundle_id>");
+      const { udid: target, pid } = resolveAppPid(pos[0]);
+      if (flags.watch) {
+        let prev = proc.rusage(pid);
+        let prevAt = performance.now();
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 1000));
+          let cur: proc.Rusage;
+          try { cur = proc.rusage(pid); }
+          catch { process.stdout.write(JSON.stringify({ pid, exited: true }) + "\n"); process.exit(0); }
+          const now = performance.now();
+          process.stdout.write(JSON.stringify({ pid, ...proc.gaugesDelta(prev, cur, now - prevAt) }) + "\n");
+          prev = cur;
+          prevAt = now;
+        }
+      }
+      const g = await proc.gauges(pid, 500);
+      const net = proc.netTotals(pid);
+      let containerMb: number | undefined;
+      try { containerMb = proc.duMb(simctl.getAppContainer(target, pos[0])); } catch {}
+      ok({
+        pid, scope: "app-process-only", ...g,
+        ...(net ? { netRxBytes: net.rxBytes, netTxBytes: net.txBytes } : {}),
+        ...(containerMb !== undefined ? { containerMb } : {}),
+      });
+    }
+    case "hierarchy": {
+      if (!pos[0]) fail("hierarchy requires <bundle_id>");
+      const { pid } = resolveAppPid(pos[0]);
+      try {
+        const text = flags.vc ? proc.vcHierarchy(pid) : proc.viewHierarchy(pid);
+        const out = (flags.out as string) || join(tmpdir(), `sim-cli-hierarchy-${Date.now()}.txt`);
+        writeFileSync(out, text + "\n");
+        ok({ pid, path: out, lines: text.split("\n").length });
+      } catch (e) { fail((e as Error).message); }
+    }
+    case "memory": {
+      const subGiven = pos[0] ? resolveSubcommand(resolveCommand("memory")!, pos[0]) : undefined;
+      const sub = subGiven?.name ?? "footprint";
+      if (sub === "warn") {
+        try { await withClient((c) => companion.simulateMemoryWarning(c)); ok({ ok: true, warned: true }); }
+        catch (e) { fail((e as Error).message); }
+      }
+      const bundle = subGiven ? pos[1] : pos[0];
+      if (!bundle) fail(`memory ${sub} requires <bundle_id>`);
+      const { pid } = resolveAppPid(bundle);
+      try {
+        if (sub === "leaks") {
+          const scan = proc.leaksScan(pid);
+          const out = (flags.out as string) || join(tmpdir(), `sim-cli-leaks-${Date.now()}.txt`);
+          writeFileSync(out, scan.report);
+          ok({ pid, leakCount: scan.leakCount, leakedBytes: scan.leakedBytes, path: out });
+        }
+        ok({ pid, ...proc.footprint(pid) });
+      } catch (e) { fail((e as Error).message); }
+    }
+    case "sample": {
+      if (!pos[0]) fail("sample requires <bundle_id>");
+      const duration = flags.duration ? Number(flags.duration) : 2;
+      const { pid } = resolveAppPid(pos[0]);
+      const out = (flags.out as string) || join(tmpdir(), `sim-cli-sample-${Date.now()}.txt`);
+      try { ok({ pid, duration, path: out, topOfStack: proc.samplePid(pid, duration, out) }); }
+      catch (e) { fail((e as Error).message); }
     }
     case "run": {
       if (!pos[0]) fail("run requires <bundle_id>");
@@ -516,6 +588,12 @@ function subcommandName(command: string, given: string | undefined): string {
 
 function concreteUdid(udid: string): string {
   return udid === "booted" ? collectBootedUdids(simctl.listDevices())[0] ?? udid : udid;
+}
+
+function soleBootedUdid(): string {
+  const booted = collectBootedUdids(simctl.listDevices());
+  if (booted.length === 1) return booted[0]!;
+  fail(booted.length === 0 ? "no simulator is booted" : `${booted.length} simulators are booted; pass --device`);
 }
 
 function collectBootedUdids(devices: any): string[] {

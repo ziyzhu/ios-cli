@@ -231,6 +231,48 @@ export const COMMANDS: Command[] = [
   },
 
   {
+    name: "stats", group: "DIAGNOSTICS", summary: "process gauges: CPU %, memory footprint, disk I/O, network",
+    args: [{ name: "bundle_id", required: true, desc: "running app" }],
+    flags: [
+      { name: "watch", type: "bool", desc: "emit one NDJSON sample per second until the process exits" },
+    ],
+    notes: "Counts the app process only; WKWebView content/networking helpers are separate processes and excluded. The one-shot form measures CPU over a 500ms window and adds net bytes (open sockets only; closed connections are not counted) plus the data container's size on disk (containerMb); --watch reports per-second deltas.",
+  },
+  {
+    name: "hierarchy", group: "DIAGNOSTICS", summary: "dump the UIKit view hierarchy via lldb",
+    args: [{ name: "bundle_id", required: true, desc: "running app" }],
+    flags: [
+      { name: "vc", type: "bool", desc: "dump the UIViewController hierarchy instead of views" },
+      { name: "out", type: "string", metavar: "file.txt", desc: "output path (default tmp file)" },
+    ],
+    notes: "Attaches lldb, which suspends the app for a few seconds: do not run mid-gesture or while the app is streaming. Requires a debuggable (Debug) build; fails if another debugger (e.g. Xcode) is attached. Frames/layers here complement `describe`, which stays the semantic (accessibility) view.",
+  },
+  {
+    name: "memory", group: "DIAGNOSTICS", summary: "memory footprint breakdown, leaks scan, or simulated memory warning",
+    usage: "memory [footprint|leaks] <bundle_id> | memory warn",
+    flags: [
+      { name: "out", type: "string", metavar: "file.txt", desc: "(leaks only) full report path (default tmp file)" },
+    ],
+    subcommands: [
+      { name: "footprint", args: [
+        { name: "bundle_id", required: true, desc: "running app" },
+      ], summary: "categorized dirty-memory breakdown (default when no subcommand)" },
+      { name: "leaks", args: [
+        { name: "bundle_id", required: true, desc: "running app" },
+      ], summary: "scan for leaked allocations; briefly suspends the app" },
+      { name: "warn", summary: "send a simulated memory warning to the whole device" },
+    ],
+  },
+  {
+    name: "sample", group: "DIAGNOSTICS", summary: "CPU profile: sample call stacks to see where time goes",
+    args: [{ name: "bundle_id", required: true, desc: "running app" }],
+    flags: [
+      { name: "duration", type: "string", metavar: "s", default: "2", desc: "sampling duration in seconds" },
+      { name: "out", type: "string", metavar: "file.txt", desc: "full call-tree output path (default tmp file)" },
+    ],
+    notes: "Non-intrusive (no attach pause). Returns the top-of-stack summary inline; the full call tree is in the output file.",
+  },
+  {
     name: "screenshot", group: "OBSERVE", summary: "capture screen as PNG",
     flags: [
       { name: "out", type: "string", metavar: "file.png", desc: "output path (default tmp file)" },

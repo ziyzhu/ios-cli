@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug Simulator UX"
+  short_description: "Diagnose simulator UX with visual evidence"
+  default_prompt: "Use $debug-simulator-ux to reproduce and diagnose this iOS Simulator UX issue with appropriate visual and runtime evidence."

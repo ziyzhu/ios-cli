@@ -148,6 +148,22 @@ async function main() {
           ok({ ok: true, udid: target, name: pos[2] });
         } catch (e) { fail((e as Error).message); }
       }
+      if (sub === "clone") {
+        if (!pos[1] || !pos[2]) fail("devices clone requires <source> <new_name>");
+        try {
+          const source = simctl.resolveDeviceSpec(pos[1]);
+          const cloned = simctl.clone(source, pos[2]);
+          ok({ ok: true, udid: cloned, name: pos[2], source });
+        } catch (e) { fail((e as Error).message); }
+      }
+      if (sub === "boot") {
+        if (!pos[1]) fail("devices boot requires <device>");
+        try {
+          const target = simctl.resolveDeviceSpec(pos[1]);
+          simctl.bootAndWait(target);
+          ok({ ok: true, udid: target, state: "Booted" });
+        } catch (e) { fail((e as Error).message); }
+      }
     }
     case "list-apps": ok(simctl.listApps(udid));
     case "uninstall": {
@@ -211,6 +227,52 @@ async function main() {
     case "clear-keychain": {
       try { simctl.clearKeychain(udid); ok({ ok: true }); }
       catch (e) { fail((e as Error).message); }
+    }
+    case "keychain": {
+      const sub = subcommandName("keychain", pos[0]);
+      try {
+        if (sub === "reset") { simctl.clearKeychain(udid); ok({ ok: true }); }
+        if (!pos[1]) fail(`keychain ${sub} requires <cert_path>`);
+        simctl.keychainAddCert(udid, sub as "add-root-cert" | "add-cert", pos[1]);
+        ok({ ok: true, action: sub, cert: pos[1] });
+      } catch (e) { fail((e as Error).message); }
+    }
+    case "keyboard": {
+      const sub = pos[0] ? subcommandName("keyboard", pos[0]) : "status";
+      try {
+        if (sub === "connect") simctl.setHardwareKeyboardConnected(true);
+        if (sub === "disconnect") simctl.setHardwareKeyboardConnected(false);
+        ok({ ok: true, connected: simctl.hardwareKeyboardConnected(), scope: "host" });
+      } catch (e) { fail((e as Error).message); }
+    }
+    case "defaults": {
+      const sub = subcommandName("defaults", pos[0]);
+      const domain = pos[1];
+      if (!domain) fail(`defaults ${sub} requires <domain>`);
+      try {
+        if (sub === "read") {
+          ok({ domain, ...(pos[2] ? { key: pos[2] } : {}), value: simctl.defaultsRead(udid, domain, pos[2]) });
+        } else if (sub === "write") {
+          if (!pos[2] || pos[3] === undefined) fail("defaults write requires <domain> <key> <value>");
+          const type = (flags.type as string | undefined) ?? "string";
+          if (!ENUMS.defaultsType.includes(type as any)) fail(enumError("defaults type", type, ENUMS.defaultsType));
+          simctl.defaultsWrite(udid, domain, pos[2], pos.slice(3).join(" "), type as any);
+          ok({ ok: true, domain, key: pos[2], value: pos.slice(3).join(" "), type });
+        } else if (sub === "delete") {
+          simctl.defaultsDelete(udid, domain, pos[2]);
+          ok({ ok: true, domain, ...(pos[2] ? { key: pos[2] } : {}) });
+        }
+      } catch (e) { fail((e as Error).message); }
+    }
+    case "pasteboard": {
+      const sub = subcommandName("pasteboard", pos[0]);
+      try {
+        if (sub === "get") ok({ value: simctl.pasteboardGet(udid) });
+        if (pos.length < 2) fail("pasteboard set requires <value>");
+        const value = pos.slice(1).join(" ");
+        simctl.pasteboardSet(udid, value);
+        ok({ ok: true, value });
+      } catch (e) { fail((e as Error).message); }
     }
     case "push": {
       let bundle: string | undefined;

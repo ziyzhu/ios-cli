@@ -5,8 +5,8 @@ import { basename, dirname, join } from "node:path";
 
 export type Udid = string | "booted";
 
-function run(args: string[], env?: NodeJS.ProcessEnv): { stdout: string; stderr: string; code: number } {
-  const r = spawnSync("xcrun", ["simctl", ...args], { encoding: "utf8", env });
+function run(args: string[], env?: NodeJS.ProcessEnv, input?: string): { stdout: string; stderr: string; code: number } {
+  const r = spawnSync("xcrun", ["simctl", ...args], { encoding: "utf8", env, input });
   return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", code: r.status ?? 1 };
 }
 
@@ -47,6 +47,54 @@ export function resolveDeviceSpec(spec: string): string {
 
 export function rename(udid: Udid, name: string): void {
   ok(["rename", udid, name]);
+}
+
+export function clone(udid: Udid, name: string): string {
+  return ok(["clone", udid, name]).trim();
+}
+
+export function bootAndWait(udid: Udid): void {
+  boot(udid);
+  ok(["bootstatus", udid, "-b"]);
+}
+
+export function defaultsRead(udid: Udid, domain: string, key?: string): string {
+  return ok(["spawn", udid, "defaults", "read", domain, ...(key ? [key] : [])]).trim();
+}
+
+export function defaultsWrite(
+  udid: Udid,
+  domain: string,
+  key: string,
+  value: string,
+  type: "bool" | "string" | "int" | "float" = "string",
+): void {
+  const flag = type === "int" ? "-int" : `-${type}`;
+  ok(["spawn", udid, "defaults", "write", domain, key, flag, value]);
+}
+
+export function defaultsDelete(udid: Udid, domain: string, key?: string): void {
+  ok(["spawn", udid, "defaults", "delete", domain, ...(key ? [key] : [])]);
+}
+
+export function pasteboardGet(udid: Udid): string {
+  return ok(["pbpaste", udid]);
+}
+
+export function pasteboardSet(udid: Udid, value: string): void {
+  const r = run(["pbcopy", udid], undefined, value);
+  if (r.code !== 0) throw new Error(r.stderr.trim() || "simctl pbcopy failed");
+}
+
+export function hardwareKeyboardConnected(): boolean {
+  const r = spawnSync("defaults", ["read", "com.apple.iphonesimulator", "ConnectHardwareKeyboard"], { encoding: "utf8" });
+  if (r.status !== 0) return false;
+  return ["1", "true", "yes"].includes(r.stdout.trim().toLowerCase());
+}
+
+export function setHardwareKeyboardConnected(connected: boolean): void {
+  const r = spawnSync("defaults", ["write", "com.apple.iphonesimulator", "ConnectHardwareKeyboard", "-bool", connected ? "true" : "false"], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(r.stderr?.trim() || "could not update Simulator keyboard preference");
 }
 
 export function listApps(udid: Udid): unknown {
@@ -386,6 +434,10 @@ export function setAppearance(udid: Udid, mode: "light" | "dark"): void {
 
 export function clearKeychain(udid: Udid): void {
   ok(["keychain", udid, "reset"]);
+}
+
+export function keychainAddCert(udid: Udid, action: "add-root-cert" | "add-cert", path: string): void {
+  ok(["keychain", udid, action, path]);
 }
 
 export function pushNotification(udid: Udid, bundleId: string | undefined, payloadPath: string): void {

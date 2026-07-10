@@ -4,6 +4,7 @@ export const ENUMS = {
   appearance: ["light", "dark"],
   configuration: ["Debug", "Release"],
   container: ["app", "data"],
+  defaultsType: ["bool", "string", "int", "float"],
   privacyAction: ["grant", "revoke", "reset"],
   privacyService: [
     "contacts", "contacts-limited", "calendar", "location", "location-always",
@@ -57,13 +58,20 @@ export const COMMANDS: Command[] = [
   {
     name: "devices", group: "DEVICE", summary: "list simulators / manage device names",
     aliases: ["list-devices"],
-    usage: "devices [rename <device> <new_name>]",
+    usage: "devices [rename|clone|boot] ...",
     subcommands: [
       { name: "list", summary: "list all simulators (default when no subcommand)" },
       { name: "rename", args: [
         { name: "device", required: true, desc: "name, UDID, or booted" },
         { name: "new_name", required: true, desc: "new device name, usable with --device" },
       ], summary: "rename a simulator" },
+      { name: "clone", args: [
+        { name: "source", required: true, desc: "source simulator name or UDID" },
+        { name: "new_name", required: true, desc: "name for the cloned simulator" },
+      ], summary: "clone a simulator" },
+      { name: "boot", args: [
+        { name: "device", required: true, desc: "simulator name or UDID" },
+      ], summary: "boot a simulator and wait until it is ready" },
     ],
   },
   { name: "list-apps", group: "DEVICE", summary: "list installed apps" },
@@ -75,7 +83,56 @@ export const COMMANDS: Command[] = [
     name: "appearance", group: "DEVICE", summary: "set UI appearance",
     args: [{ name: "mode", required: true, enum: ENUMS.appearance, desc: "light or dark" }],
   },
-  { name: "clear-keychain", group: "DEVICE", summary: "reset the simulator keychain" },
+  { name: "clear-keychain", group: "DEVICE", summary: "reset the simulator keychain (alias of keychain reset)" },
+  {
+    name: "keychain", group: "DEVICE", summary: "manage the simulator keychain",
+    subcommands: [
+      { name: "add-root-cert", args: [
+        { name: "cert", required: true, desc: "certificate file (PEM or DER)" },
+      ], summary: "trust a certificate as a root, e.g. a proxy CA for HTTPS capture" },
+      { name: "add-cert", args: [
+        { name: "cert", required: true, desc: "certificate file (PEM or DER)" },
+      ], summary: "add a certificate to the keychain" },
+      { name: "reset", summary: "reset the keychain" },
+    ],
+  },
+  {
+    name: "keyboard", group: "DEVICE", summary: "manage the Simulator hardware keyboard",
+    subcommands: [
+      { name: "status", summary: "report whether the Mac keyboard is connected" },
+      { name: "connect", aliases: ["enable"], summary: "connect the Mac keyboard and suppress the software keyboard" },
+      { name: "disconnect", aliases: ["disable"], summary: "disconnect the Mac keyboard and allow the software keyboard" },
+    ],
+    notes: "This changes Simulator's host-wide Connect Hardware Keyboard setting, so it applies to every open simulator.",
+  },
+  {
+    name: "defaults", group: "STATE", summary: "read and write simulator app defaults",
+    flags: [
+      { name: "type", type: "string", enum: ENUMS.defaultsType, default: "string", desc: "value type for write" },
+    ],
+    subcommands: [
+      { name: "read", args: [
+        { name: "domain", required: true, desc: "defaults domain or bundle ID" },
+        { name: "key", desc: "optional key" },
+      ], summary: "read a defaults domain or key" },
+      { name: "write", args: [
+        { name: "domain", required: true, desc: "defaults domain or bundle ID" },
+        { name: "key", required: true, desc: "defaults key" },
+        { name: "value", required: true, desc: "value" },
+      ], summary: "write a defaults value" },
+      { name: "delete", args: [
+        { name: "domain", required: true, desc: "defaults domain or bundle ID" },
+        { name: "key", desc: "optional key" },
+      ], summary: "delete a defaults domain or key" },
+    ],
+  },
+  {
+    name: "pasteboard", group: "STATE", summary: "read and write the simulator pasteboard",
+    subcommands: [
+      { name: "get", summary: "read text from the pasteboard" },
+      { name: "set", args: [{ name: "value", required: true, variadic: true, desc: "text to copy" }], summary: "write text to the pasteboard" },
+    ],
+  },
 
   {
     name: "run", group: "APP", summary: "build -> install -> terminate prior -> launch -> wait -> capture logs",

@@ -561,41 +561,39 @@ async function main() {
       ok({ ok: true });
     }
     case "fill": {
-      const q: Query = {
-        label: flags.label as string | undefined,
-        role: flags.role as string | undefined,
-        text: flags.text as string | undefined,
-        id: flags.id as string | undefined,
-      };
+      const q = queryFromFlags(flags);
       if (!hasQuery(q)) fail("fill requires --label, --role, --text, or --id");
       if (!pos[0]) fail("fill requires a value");
       const value = pos.join(" ");
       const wait = flags.wait ? Number(flags.wait) : 0;
       const settle = flags.settle ? Number(flags.settle) : 200;
       const result = await withClient(async (c) => {
-        const m = wait > 0 ? await pollMatch(c, q, wait) : findInTree(await companion.describe(c), q)[0];
+        const m = await pollMatch(c, q, wait > 0 ? wait : 1000, { hittable: true });
         if (!m) fail(wait > 0 ? `No element matched after ${wait}ms` : `No element matched`);
         await companion.tap(c, m.x + m.w / 2, m.y + m.h / 2);
         await new Promise((r) => setTimeout(r, settle));
-        await companion.text(c, value);
+        const replace = !!flags.replace;
+        if (replace) await companion.replaceText(c, value);
+        else await companion.text(c, value);
         const refind = async (): Promise<Match | undefined> => {
           const tree = await companion.describe(c);
           if (m.id) {
-            const byId = findInTree(tree, { id: m.id })[0];
+            const byId = findInTree(tree, { id: m.id }, { visibleOnly: true })[0];
             if (byId) return byId;
           }
-          const byQuery = findInTree(tree, q)[0];
+          const byQuery = findInTree(tree, q, { visibleOnly: true })[0];
           if (byQuery) return byQuery;
           if (!m.role) return undefined;
-          return findInTree(tree, { role: m.role }).find((e) => Math.abs(e.x - m.x) < 2 && Math.abs(e.y - m.y) < 2);
+          return findInTree(tree, { role: m.role }, { visibleOnly: true }).find((e) => Math.abs(e.x - m.x) < 2 && Math.abs(e.y - m.y) < 2);
         };
-        const landed = (v: string | undefined) => !!v && v.toLowerCase().includes(value.toLowerCase());
+        const landed = (v: string | undefined) => !!v && (replace ? v === value : v.toLowerCase().includes(value.toLowerCase()));
         let after = await refind();
         let retried = false;
         if (after && !landed(after.value) && after.value === m.value) {
           retried = true;
           await new Promise((r) => setTimeout(r, Math.max(settle * 4, 1000)));
-          await companion.text(c, value);
+          if (replace) await companion.replaceText(c, value);
+          else await companion.text(c, value);
           after = await refind();
         }
         return {

@@ -11,7 +11,7 @@ Thin agent-friendly wrapper around `xcrun simctl`, `xcodebuild`, and `idb_compan
 
 Before issuing any command, verify the environment:
 
-1. A simulator is booted: `xcrun simctl list devices booted -j`. If none, ask the user which device to boot or run `xcrun simctl boot <udid>`.
+1. A simulator is booted: `sim-cli devices`. If none, ask the user which device to boot or run `sim-cli devices boot <device>`.
 2. `idb_companion` is running for that UDID: `pgrep -fl idb_companion`. If missing for the target sim, start one:
    ```
    idb_companion --udid <UDID> --grpc-domain-sock /tmp/idb/<UDID>_companion.sock --only simulator &
@@ -39,8 +39,11 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | --- | --- |
 | Inventory devices | `devices` (alias: `list-devices`) |
 | Name a device | `devices rename <device> <new_name>` — the name then works with `--device` |
+| Clone a device | `devices clone <source> <new_name>` |
+| Boot and wait | `devices boot <device>` |
 | What's installed | `list-apps` |
 | Remove app | `uninstall <bundle_id>` |
+| Control keyboard | `keyboard status\|connect\|disconnect` (`enable`/`disable` aliases); the setting is host-wide |
 | Read/write a container file | `file list\|pull\|push\|delete\|mkdir\|mv <bundle_id> ...` (`ls`/`rm` aliases accepted; `--container app\|data`, `--dest <dir>` for `file pull`) |
 | Build, install, launch | `run <bundle_id> [args...]` (see flags below) |
 | Launch a prebuilt artifact | `run <bundle_id> --app <path>` |
@@ -50,10 +53,17 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | Read a captured log | `tail -f ~/.sim-cli/logs/<udid>.log \| jq ...` (path comes from `logs`) |
 | Pixel screenshot | `screenshot [--out file.png] [--base64]` |
 | AX tree | `describe [--point x,y] [--screenshot]` |
-| Tap (coords or label) | `tap <x> <y>` or `tap --label "Settings"` |
-| Swipe | `swipe <x1> <y1> <x2> <y2> [--duration s] [--delta n]` |
+| Resource gauges | `stats <bundle_id> [--watch]` — CPU %, footprint, disk I/O; app process only (WebKit helpers excluded) |
+| View hierarchy (frames/layers) | `hierarchy <bundle_id> [--vc]` — lldb attach; suspends the app a few seconds, never mid-gesture |
+| Memory breakdown / leaks | `memory <bundle_id>` / `memory leaks <bundle_id>` / `memory warn` (device-wide warning) |
+| CPU profile (where time goes) | `sample <bundle_id> [--duration s]` — no attach pause |
+| Wait for UI | `wait --id <id> [--timeout ms] [--stable ms] [--missing]` |
+| Tap (coords or label) | `tap <x> <y>` or `tap --label "Settings" --wait 5000 --stable 200` |
+| Swipe | `swipe --direction up\|down\|left\|right [--edge left\|right\|top\|bottom] [--distance 0.55]`, or explicit coordinates |
 | Type | `type "hello"` |
-| Fill a field | `fill --label "Email" "user@example.com"` |
+| Fill a field | `fill --label "Email" "user@example.com" [--replace]` |
+| Read/write defaults | `defaults read\|write\|delete <domain> ...` |
+| Read/write pasteboard | `pasteboard get\|set [value]` |
 | Hardware button | `press <home\|lock\|siri\|side_button\|apple_pay> [--duration s]` |
 
 ### `run` flags
@@ -90,8 +100,8 @@ sim-cli run com.acme.MyApp --app /path/to/MyApp.app
 **Drive a UI flow without hardcoding coordinates** — prefer `tap --label` over raw coordinates; the AX tree is the source of truth. Use `describe` + `jq` to inspect when needed.
 ```
 sim-cli describe | jq '.. | objects | select(.AXLabel? == "Sign In")'
-sim-cli tap --label "Sign In"
-sim-cli type "user@example.com"
+sim-cli tap --label "Sign In" --wait 5000 --stable 200
+sim-cli fill --label "Email" "user@example.com" --replace
 ```
 
 **Jump straight into a deep link** instead of tapping through:

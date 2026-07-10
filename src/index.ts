@@ -7,6 +7,7 @@ import * as daemon from "./daemon.ts";
 import * as proc from "./process.ts";
 import * as companion from "./companion.ts";
 import * as resolve from "./resolve.ts";
+import * as window from "./window.ts";
 import { overview, commandHelp, agentContext, resolveSubcommand, resolveCommand, enumError, ENUMS } from "./help.ts";
 
 type Flags = Record<string, string | boolean | string[]>;
@@ -78,6 +79,13 @@ function parseScheme(container: string, schemeName: string): { env: Record<strin
   return { env, args };
 }
 
+function announceDevice(name: string) {
+  const title = `sim: ${name}`;
+  const osc = `\x1b]0;${title}\x07`;
+  const seq = process.env.TMUX ? `${osc}\x1bk${title}\x1b\\` : osc;
+  try { writeFileSync("/dev/tty", seq); } catch {}
+}
+
 function encode(stream: NodeJS.WriteStream, data: unknown): string {
   return stream.isTTY ? JSON.stringify(data, null, 2) : JSON.stringify(data);
 }
@@ -110,11 +118,13 @@ async function main() {
     process.exit(0);
   }
   if (cmd === "agent-context") ok(agentContext());
-  const deviceSpec = (flags.device as string) || (flags.udid as string)
-    || process.env.SIM_DEVICE || process.env.IDB_UDID || "booted";
+  const explicitDevice = (flags.device as string) || (flags.udid as string)
+    || process.env.SIM_DEVICE || process.env.IDB_UDID;
+  const deviceSpec = explicitDevice || "booted";
   let udid: string;
   try { udid = simctl.resolveDeviceSpec(deviceSpec); }
   catch (e) { fail((e as Error).message); }
+  if (explicitDevice && cmd !== "daemon") announceDevice(explicitDevice);
   const explicitCompanion = (flags.companion as string) || process.env.IDB_COMPANION;
   const verbose = !!flags.verbose;
 
@@ -609,6 +619,11 @@ async function main() {
       if (!pos[0]) fail("press requires a button name");
       await withClient((c) => companion.button(c, pos[0]!, flags.duration ? Number(flags.duration) : undefined));
       ok({ ok: true });
+    }
+    case "grid": {
+      if (pos[0]) subcommandName("grid", pos[0]);
+      try { ok(await window.organize()); }
+      catch (e) { fail((e as Error).message); }
     }
     default:
       fail(`Unknown command: ${cmd}`);

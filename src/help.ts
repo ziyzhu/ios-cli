@@ -370,6 +370,15 @@ export const COMMANDS: Command[] = [
     args: [{ name: "button", required: true, enum: ENUMS.button, desc: "hardware button" }],
     flags: [{ name: "duration", type: "string", metavar: "s", desc: "hold duration" }],
   },
+
+  {
+    name: "grid", group: "WINDOW", summary: "organize Simulator windows into a grid on the main screen",
+    usage: "grid [organize]",
+    subcommands: [
+      { name: "organize", summary: "gather all Simulator windows onto the main display and tile them four per row (default)" },
+    ],
+    notes: "Drives the Rectangle app (rectangleapp.com) over its URL scheme; the terminal needs macOS Accessibility permission to raise windows. Windows are placed in device-name order, so mango-qa-1 always lands in the same slot.",
+  },
 ];
 
 function inlineEnum(values: readonly string[]): boolean {

@@ -12,7 +12,7 @@ type Flags = Record<string, string | boolean | string[]>;
 
 const MULTI_FLAGS = new Set(["env"]);
 const BOOLEAN_FLAGS = new Set([
-  "base64", "screenshot", "help", "verbose", "watch", "vc",
+  "base64", "screenshot", "help", "verbose", "missing", "replace", "watch", "vc",
 ]);
 const SHORT_FLAGS: Record<string, string> = {
   v: "verbose",
@@ -479,35 +479,74 @@ async function main() {
       }
       ok({ accessibility: tree });
     }
+    case "wait": {
+      const q = queryFromFlags(flags);
+      if (!hasQuery(q)) fail("wait requires --label, --role, --text, or --id");
+      const timeout = flags.timeout ? Number(flags.timeout) : 5000;
+      const stable = flags.stable ? Number(flags.stable) : 0;
+      if (flags.missing) {
+        const gone = await withClient((c) => pollMissing(c, q, timeout, stable));
+        if (!gone) fail(`Element still matched after ${timeout}ms`);
+        ok({ ok: true, missing: true });
+      }
+      const match = await withClient((c) => pollMatch(c, q, timeout, { stableMs: stable }));
+      if (!match) fail(`No element matched after ${timeout}ms`);
+      ok({ ok: true, match });
+    }
     case "tap": {
-      let x: number, y: number;
-      const q: Query = {
-        label: flags.label as string | undefined,
-        role: flags.role as string | undefined,
-        text: flags.text as string | undefined,
-        id: flags.id as string | undefined,
-      };
+      const q = queryFromFlags(flags);
+      const duration = flags.duration ? Number(flags.duration) : undefined;
+      const settle = flags.settle ? Number(flags.settle) : 0;
       if (hasQuery(q)) {
         const wait = flags.wait ? Number(flags.wait) : 0;
-        const m = await withClient(async (c) =>
-          wait > 0 ? await pollMatch(c, q, wait) : findInTree(await companion.describe(c), q)[0]);
+        const stable = flags.stable ? Number(flags.stable) : 0;
+        const result = await withClient(async (c) => {
+          const m = await pollMatch(c, q, wait > 0 ? wait : Math.max(1000, stable + 500), {
+            stableMs: stable,
+            hittable: true,
+          });
+          if (!m) return undefined;
+          const x = m.x + m.w / 2;
+          const y = m.y + m.h / 2;
+          await companion.tap(c, x, y, duration);
+          if (settle > 0) await new Promise((r) => setTimeout(r, settle));
+          return { x, y, match: m };
+        });
+        const m = result?.match;
         if (!m) fail(wait > 0 ? `No element matched after ${wait}ms` : `No element matched`);
-        x = m.x + m.w / 2;
-        y = m.y + m.h / 2;
-      } else {
-        [x, y] = [num(pos[0], "x"), num(pos[1], "y")];
+        ok({ ok: true, x: result!.x, y: result!.y, match: m });
       }
-      await withClient((c) => companion.tap(c, x, y, flags.duration ? Number(flags.duration) : undefined));
+      const [x, y] = [num(pos[0], "x"), num(pos[1], "y")];
+      await withClient(async (c) => {
+        await companion.tap(c, x, y, duration);
+        if (settle > 0) await new Promise((r) => setTimeout(r, settle));
+      });
       ok({ ok: true, x, y });
     }
     case "swipe": {
+      const direction = flags.direction as string | undefined;
+      const duration = flags.duration ? Number(flags.duration) : undefined;
+      const delta = flags.delta ? Number(flags.delta) : undefined;
+      if (direction) {
+        if (!ENUMS.direction.includes(direction as any)) fail(enumError("swipe direction", direction, ENUMS.direction));
+        const edge = flags.edge as string | undefined;
+        if (edge && !ENUMS.edge.includes(edge as any)) fail(enumError("swipe edge", edge, ENUMS.edge));
+        const distance = flags.distance ? Number(flags.distance) : 0.55;
+        if (!(distance > 0 && distance <= 0.9)) fail("--distance must be greater than 0 and at most 0.9");
+        const q = queryFromFlags(flags);
+        const points = await withClient(async (c) => {
+          const tree = await companion.describe(c);
+          const frame = hasQuery(q) ? findInTree(tree, q, { visibleOnly: true })[0] : applicationFrame(tree);
+          if (!frame) fail(hasQuery(q) ? "No swipe anchor matched" : "Could not determine screen frame");
+          const gesture = relativeSwipe(frame, direction as any, edge as any, distance);
+          await companion.swipe(c, gesture.start, gesture.end, duration, delta);
+          return gesture;
+        });
+        ok({ ok: true, ...points });
+      }
       const [x1, y1, x2, y2] = [num(pos[0], "x1"), num(pos[1], "y1"), num(pos[2], "x2"), num(pos[3], "y2")];
-      await withClient((c) =>
-        companion.swipe(c, { x: x1, y: y1 }, { x: x2, y: y2 },
-          flags.duration ? Number(flags.duration) : undefined,
-          flags.delta ? Number(flags.delta) : undefined),
-      );
-      ok({ ok: true });
+      await withClient((c) => companion.swipe(c, { x: x1, y: y1 }, { x: x2, y: y2 }, duration, delta));
+      ok({ ok: true, start: { x: x1, y: y1 }, end: { x: x2, y: y2 } });
     }
     case "type": {
       if (!pos[0]) fail("type requires a string");
@@ -613,12 +652,41 @@ interface Match { x: number; y: number; w: number; h: number; role: string; labe
 
 type Query = { label?: string; role?: string; text?: string; id?: string };
 
+type Frame = { x: number; y: number; w: number; h: number };
+
+function queryFromFlags(flags: Flags): Query {
+  return {
+    label: flags.label as string | undefined,
+    role: flags.role as string | undefined,
+    text: flags.text as string | undefined,
+    id: flags.id as string | undefined,
+  };
+}
+
 function hasQuery(q: Query): boolean {
   return !!(q.label || q.role || q.text || q.id);
 }
 
-function findInTree(tree: unknown, q: Query): Match[] {
+function applicationFrame(tree: unknown): Frame | undefined {
+  let found: Frame | undefined;
+  const visit = (n: any) => {
+    if (found || !n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const child of n) visit(child); return; }
+    const role = String(n.role ?? n.AXRole ?? "");
+    const frame = n.frame ?? {};
+    if (role === "AXApplication" && typeof frame.x === "number" && typeof frame.y === "number" && frame.width > 0 && frame.height > 0) {
+      found = { x: frame.x, y: frame.y, w: frame.width, h: frame.height };
+      return;
+    }
+    for (const value of Object.values(n)) if (value && typeof value === "object") visit(value);
+  };
+  visit(tree);
+  return found;
+}
+
+function findInTree(tree: unknown, q: Query, opts: { visibleOnly?: boolean } = {}): Match[] {
   const results: Match[] = [];
+  const screen = opts.visibleOnly ? applicationFrame(tree) : undefined;
   const wantLabel = q.label?.toLowerCase();
   const wantRole = q.role?.toLowerCase();
   const wantText = q.text?.toLowerCase();
@@ -630,14 +698,20 @@ function findInTree(tree: unknown, q: Query): Match[] {
     const role = String(n.role ?? n.AXRole ?? "");
     const value = String(n.AXValue ?? n.value ?? "");
     const id = String(n.AXUniqueId ?? "");
+    const text = [label, value, n.title, n.help, ...(Array.isArray(n.custom_actions) ? n.custom_actions : [])].filter(Boolean).join(" ");
     const fr = n.frame ?? {};
     const labelOk = wantLabel ? label.toLowerCase().includes(wantLabel) : true;
     const roleOk = wantRole ? role.toLowerCase().includes(wantRole) : true;
-    const textOk = wantText ? (label + " " + value).toLowerCase().includes(wantText) : true;
+    const textOk = wantText ? text.toLowerCase().includes(wantText) : true;
     const idOk = wantId ? id === wantId : true;
-    if (hasQuery(q) && labelOk && roleOk && textOk && idOk &&
-        typeof fr.x === "number" && typeof fr.y === "number") {
-      results.push({ x: fr.x, y: fr.y, w: fr.width ?? 0, h: fr.height ?? 0, role, label, id, value });
+    if (hasQuery(q) && labelOk && roleOk && textOk && idOk && typeof fr.x === "number" && typeof fr.y === "number") {
+      const match = { x: fr.x, y: fr.y, w: fr.width ?? 0, h: fr.height ?? 0, role, label, id, value };
+      const onscreen = !screen || (
+        match.w > 0 && match.h > 0
+        && match.x < screen.x + screen.w && match.x + match.w > screen.x
+        && match.y < screen.y + screen.h && match.y + match.h > screen.y
+      );
+      if (onscreen) results.push(match);
     }
     if (n.children) visit(n.children);
     for (const v of Object.values(n)) if (v && typeof v === "object") visit(v);
@@ -654,15 +728,91 @@ function findInTree(tree: unknown, q: Query): Match[] {
   return deduped.sort((a, b) => Number(inert(a.role)) - Number(inert(b.role)));
 }
 
-async function pollMatch(c: any, q: Query, timeoutMs: number): Promise<Match | undefined> {
+function matchSignature(match: Match): string {
+  return [match.x, match.y, match.w, match.h, match.role, match.label, match.id, match.value].join("\u0000");
+}
+
+async function matchIsHittable(c: any, q: Query, match: Match): Promise<boolean> {
+  const x = match.x + match.w / 2;
+  const y = match.y + match.h / 2;
+  const tree = await companion.describe(c, { x, y });
+  return findInTree(tree, q).length > 0;
+}
+
+async function pollMatch(
+  c: any,
+  q: Query,
+  timeoutMs: number,
+  opts: { stableMs?: number; hittable?: boolean } = {},
+): Promise<Match | undefined> {
   const deadline = Date.now() + timeoutMs;
+  let signature = "";
+  let stableSince = 0;
   for (;;) {
     const tree = await companion.describe(c);
-    const m = findInTree(tree, q)[0];
-    if (m) return m;
+    const match = findInTree(tree, q, { visibleOnly: true })[0];
+    if (match) {
+      const nextSignature = matchSignature(match);
+      if (nextSignature !== signature) {
+        signature = nextSignature;
+        stableSince = Date.now();
+      }
+      const stable = Date.now() - stableSince >= (opts.stableMs ?? 0);
+      if (stable && (!opts.hittable || await matchIsHittable(c, q, match))) return match;
+    } else {
+      signature = "";
+      stableSince = 0;
+    }
     if (Date.now() >= deadline) return undefined;
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 100));
   }
+}
+
+async function pollMissing(c: any, q: Query, timeoutMs: number, stableMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let missingSince = 0;
+  for (;;) {
+    const matches = findInTree(await companion.describe(c), q, { visibleOnly: true });
+    if (matches.length === 0) {
+      if (missingSince === 0) missingSince = Date.now();
+      if (Date.now() - missingSince >= stableMs) return true;
+    } else {
+      missingSince = 0;
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+function relativeSwipe(
+  frame: Frame,
+  direction: "up" | "down" | "left" | "right",
+  edge: "left" | "right" | "top" | "bottom" | undefined,
+  distance: number,
+): { start: { x: number; y: number }; end: { x: number; y: number } } {
+  const insetX = Math.max(4, frame.w * 0.04);
+  const insetY = Math.max(4, frame.h * 0.04);
+  const minX = frame.x + insetX;
+  const maxX = frame.x + frame.w - insetX;
+  const minY = frame.y + insetY;
+  const maxY = frame.y + frame.h - insetY;
+  const center = { x: frame.x + frame.w / 2, y: frame.y + frame.h / 2 };
+  const vector = direction === "up" ? { x: 0, y: -1 }
+    : direction === "down" ? { x: 0, y: 1 }
+    : direction === "left" ? { x: -1, y: 0 }
+    : { x: 1, y: 0 };
+  const travel = (vector.x === 0 ? frame.h : frame.w) * distance;
+  const start = edge === "left" ? { x: minX, y: center.y }
+    : edge === "right" ? { x: maxX, y: center.y }
+    : edge === "top" ? { x: center.x, y: minY }
+    : edge === "bottom" ? { x: center.x, y: maxY }
+    : { x: center.x - vector.x * travel / 2, y: center.y - vector.y * travel / 2 };
+  const end = { x: start.x + vector.x * travel, y: start.y + vector.y * travel };
+  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+  return {
+    start: { x: clamp(start.x, minX, maxX), y: clamp(start.y, minY, maxY) },
+    end: { x: clamp(end.x, minX, maxX), y: clamp(end.y, minY, maxY) },
+  };
 }
 
 function parsePoint(s: string): { x: number; y: number } {

@@ -31,6 +31,9 @@ type Pt = { x: number; y: number };
 
 const DOWN = 0;
 const UP = 1;
+const BACKSPACE = 42;
+const A = 4;
+const GUI = 227;
 
 function pressTouch(p: Pt, dir: number) {
   return { press: { action: { touch: { point: p } }, direction: dir } };
@@ -87,6 +90,19 @@ export async function text(client: any, str: string) {
   const evs = textToKeyEvents(str).map((k) =>
     pressKey(k.keycode, k.down ? DOWN : UP),
   );
+  await streamHid(client, evs);
+}
+
+export async function replaceText(client: any, str: string) {
+  const evs = [
+    pressKey(GUI, DOWN),
+    pressKey(A, DOWN),
+    pressKey(A, UP),
+    pressKey(GUI, UP),
+    pressKey(BACKSPACE, DOWN),
+    pressKey(BACKSPACE, UP),
+    ...textToKeyEvents(str).map((k) => pressKey(k.keycode, k.down ? DOWN : UP)),
+  ];
   await streamHid(client, evs);
 }
 

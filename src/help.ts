@@ -191,6 +191,14 @@ export const COMMANDS: Command[] = [
 
   { name: "config", group: "STATE", summary: "dump ~/.sim-cli: companion registry + captured log files" },
   {
+    name: "daemon", group: "STATE", summary: "serve simulator state over HTTP (GET /devices lists sims + the host TCP ports their apps listen on)",
+    usage: "daemon [--port 9909]",
+    flags: [
+      { name: "port", type: "string", metavar: "port", default: "9909", desc: "TCP port to listen on (127.0.0.1 only)" },
+    ],
+    notes: "Responses carry access-control-allow-origin: * so local dev websites can query it directly.",
+  },
+  {
     name: "logs", group: "STATE", summary: "list captured log files from prior runs",
     flags: [{ name: "device", type: "string", metavar: "name|udid", desc: "only this sim's capture" }],
     notes: "Lists path, size, last-modified, and whether capture is still live.",

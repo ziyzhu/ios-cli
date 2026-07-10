@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as simctl from "./simctl.ts";
+import * as daemon from "./daemon.ts";
 import * as proc from "./process.ts";
 import * as companion from "./companion.ts";
 import * as resolve from "./resolve.ts";
@@ -442,6 +443,12 @@ async function main() {
       try { logs = simctl.startLogCapture(targetUdid, { verbose: true }); }
       catch (e) { process.stderr.write(encode(process.stderr, { warn: `log capture failed: ${(e as Error).message}` }) + "\n"); }
       ok({ ...result, app: appPath, ready, ...(logs ? { logs } : {}), ...(built ? { built } : {}) });
+    }
+    case "daemon": {
+      const port = flags.port ? Number(flags.port) : daemon.DEFAULT_PORT;
+      if (!Number.isInteger(port) || port <= 0 || port > 65535) fail("--port must be a valid TCP port");
+      daemon.startDaemon(port);
+      return;
     }
     case "config": {
       ok({

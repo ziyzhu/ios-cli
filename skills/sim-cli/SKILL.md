@@ -41,6 +41,7 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | Name a device | `devices rename <device> <new_name>` — the name then works with `--device` |
 | Clone a device | `devices clone <source> <new_name>` |
 | Boot and wait | `devices boot <device>` |
+| Shut down devices | `devices shutdown <device>...` — explicit names or UDIDs only; already-shutdown devices are unchanged |
 | What's installed | `list-apps` |
 | Remove app | `uninstall <bundle_id>` |
 | Control keyboard | `keyboard status\|connect\|disconnect` (`enable`/`disable` aliases); toggles the device's live hardware keyboard via the Simulator I/O menu. `disconnect` shows the software keyboard like a real device (needs an open Simulator window + Accessibility permission); state persists |

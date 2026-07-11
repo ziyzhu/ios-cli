@@ -53,6 +53,7 @@ learn the surface without parsing help text.
 | `devices rename <device> <new_name>` | rename a simulator; the name then works anywhere `--device` is accepted |
 | `devices clone <source> <new_name>` | clone a simulator by name or UDID |
 | `devices boot <device>` | boot a simulator and wait until it is ready |
+| `devices shutdown <device>...` | shut down one or more explicit simulators by name or UDID; already-shutdown devices are unchanged |
 | `list-apps` | list installed apps |
 | `uninstall <bundle_id>` | remove app |
 | `keyboard status\|connect\|disconnect` | toggle the target device's live hardware keyboard via the Simulator I/O menu (`enable`/`disable` aliases); `disconnect` shows the software keyboard like a real device. Needs an open Simulator window + Accessibility permission; state persists (no auto-connect) |

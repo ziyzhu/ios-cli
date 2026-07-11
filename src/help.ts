@@ -60,7 +60,7 @@ export const COMMANDS: Command[] = [
   {
     name: "devices", group: "DEVICE", summary: "list simulators / manage device names",
     aliases: ["list-devices"],
-    usage: "devices [rename|clone|boot] ...",
+    usage: "devices [rename|clone|boot|shutdown] ...",
     subcommands: [
       { name: "list", summary: "list all simulators (default when no subcommand)" },
       { name: "rename", args: [
@@ -74,6 +74,9 @@ export const COMMANDS: Command[] = [
       { name: "boot", args: [
         { name: "device", required: true, desc: "simulator name or UDID" },
       ], summary: "boot a simulator and wait until it is ready" },
+      { name: "shutdown", args: [
+        { name: "device", required: true, variadic: true, desc: "one or more simulator names or UDIDs" },
+      ], summary: "shut down explicit simulators; already-shutdown devices are unchanged" },
     ],
   },
   { name: "list-apps", group: "DEVICE", summary: "list installed apps" },
@@ -387,7 +390,7 @@ function inlineEnum(values: readonly string[]): boolean {
 
 function renderArg(a: Arg): string {
   const inner = a.enum && inlineEnum(a.enum) ? a.enum.join("|") : a.name;
-  if (a.variadic) return `[${inner}...]`;
+  if (a.variadic) return a.required ? `<${inner}...>` : `[${inner}...]`;
   return a.required ? `<${inner}>` : `[${inner}]`;
 }
 

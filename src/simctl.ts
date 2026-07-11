@@ -364,17 +364,41 @@ function hasXcpretty(): boolean {
   return spawnSync("bash", ["-c", "command -v xcpretty"], { encoding: "utf8" }).status === 0;
 }
 
-export async function build(opts: {
+export interface BuildOpts {
   workspace?: string;
   project?: string;
   scheme: string;
   configuration?: string;
-}): Promise<void> {
+  derivedData?: string;
+}
+
+function buildArgs(opts: BuildOpts): string[] {
   const args: string[] = [];
   if (opts.workspace) args.push("-workspace", opts.workspace);
   else if (opts.project) args.push("-project", opts.project);
   args.push("-scheme", opts.scheme, "-configuration", opts.configuration ?? "Debug",
-    "-sdk", "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build");
+    "-sdk", "iphonesimulator", "-destination", "generic/platform=iOS Simulator");
+  if (opts.derivedData) args.push("-derivedDataPath", opts.derivedData);
+  return args;
+}
+
+export function resolveBuiltApp(opts: BuildOpts): string | undefined {
+  const r = spawnSync("xcodebuild", [...buildArgs(opts), "-showBuildSettings", "-json"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) return undefined;
+  try {
+    const targets = JSON.parse(r.stdout) as Array<{ buildSettings?: Record<string, string> }>;
+    for (const { buildSettings } of targets) {
+      const wrapper = buildSettings?.WRAPPER_EXTENSION;
+      const dir = buildSettings?.TARGET_BUILD_DIR;
+      const name = buildSettings?.FULL_PRODUCT_NAME;
+      if (wrapper === "app" && dir && name) return join(dir, name);
+    }
+  } catch { return undefined; }
+  return undefined;
+}
+
+export async function build(opts: BuildOpts): Promise<void> {
+  const args = [...buildArgs(opts), "build"];
 
   const child = hasXcpretty()
     ? spawn("bash", ["-c", `set -o pipefail; xcodebuild ${args.map(shellQuote).join(" ")} | xcpretty`], { stdio: ["ignore", "pipe", "pipe"] })

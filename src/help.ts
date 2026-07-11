@@ -140,6 +140,17 @@ export const COMMANDS: Command[] = [
   },
 
   {
+    name: "build", group: "APP", summary: "build for the generic simulator destination; print the .app path",
+    flags: [
+      { name: "workspace", type: "string", metavar: "path", desc: "Xcode workspace (auto-detected in CWD)" },
+      { name: "project", type: "string", metavar: "path", desc: "Xcode project (auto-detected in CWD)" },
+      { name: "scheme", type: "string", metavar: "name", desc: "build scheme (auto-detected if only one)" },
+      { name: "configuration", type: "string", enum: ENUMS.configuration, default: "Debug", desc: "build configuration" },
+      { name: "derived-data", type: "string", metavar: "path", desc: "-derivedDataPath for a self-contained build product" },
+    ],
+    notes: "Build-only, no device needed: builds once for `generic/platform=iOS Simulator` and prints the resolved `.app` so it can be installed across a pool via `run --app <path>`. Prefer this over invoking `xcodebuild` directly.",
+  },
+  {
     name: "run", group: "APP", summary: "build -> install -> terminate prior -> launch -> wait -> capture logs",
     args: [
       { name: "bundle_id", required: true, desc: "app to launch" },

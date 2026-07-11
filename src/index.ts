@@ -118,6 +118,22 @@ async function main() {
     process.exit(0);
   }
   if (cmd === "agent-context") ok(agentContext());
+  if (cmd === "build") {
+    const container = (flags.workspace || flags.project)
+      ? { workspace: flags.workspace as string | undefined, project: flags.project as string | undefined }
+      : simctl.detectXcodeProject();
+    if (!container.workspace && !container.project) fail("No .xcworkspace/.xcodeproj found in CWD; pass --workspace or --project");
+    const scheme = (flags.scheme as string | undefined) ?? simctl.detectScheme(container);
+    if (!scheme) fail("Could not auto-detect scheme; pass --scheme <name>");
+    const configuration = (flags.configuration as string | undefined) ?? "Debug";
+    const derivedData = flags["derived-data"] as string | undefined;
+    const opts = { ...container, scheme, configuration, derivedData };
+    try { await simctl.build(opts); }
+    catch (e) { fail((e as Error).message); }
+    const app = simctl.resolveBuiltApp(opts);
+    if (!app) fail("Build succeeded but the .app path could not be resolved");
+    ok({ app, built: { ...container, scheme, configuration, ...(derivedData ? { derivedData } : {}) } });
+  }
   const explicitDevice = (flags.device as string) || (flags.udid as string)
     || process.env.SIM_DEVICE || process.env.IDB_UDID;
   const deviceSpec = explicitDevice || "booted";

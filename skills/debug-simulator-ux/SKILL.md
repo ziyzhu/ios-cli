@@ -1,6 +1,6 @@
 ---
 name: debug-simulator-ux
-description: Reproduce, inspect, diagnose, and verify any visible or interactive iOS Simulator UX issue using sim-cli and the smallest useful evidence bundle. Use for layout and safe-area bugs, keyboard and focus behavior, scrolling and anchoring, gestures and hit targets, navigation and presentation, animation smoothness or jank, loading and transient states, accessibility, visual regressions, and before/after UX comparisons.
+description: Reproduce, inspect, diagnose, and verify any visible or interactive iOS Simulator UX issue using the `sim` CLI and the smallest useful evidence bundle. Use for layout and safe-area bugs, keyboard and focus behavior, scrolling and anchoring, gestures and hit targets, navigation and presentation, animation smoothness or jank, loading and transient states, accessibility, visual regressions, and before/after UX comparisons.
 ---
 
 # Debug Simulator UX
@@ -12,7 +12,7 @@ Use simulator evidence to answer what happened, when it happened, and which laye
 1. Read the target repository's agent instructions and discover its supported build and launch command.
 2. Claim an explicit simulator. Never rely on `booted` when multiple devices are running, and never reuse a simulator owned by another session.
 3. Preserve the user's app state unless resetting it is necessary to reproduce the issue.
-4. Use `sim-cli --help`, `sim-cli help <command>`, or `sim-cli agent-context` to discover the installed command surface instead of guessing flags.
+4. Use `sim --help`, `sim help <command>`, or `sim agent-context` to discover the installed command surface instead of guessing flags.
 5. Launch the current build only when needed. Reinstalling can destroy the state under investigation.
 
 ## Choose the evidence
@@ -31,7 +31,7 @@ Logs can prove state correctness. They cannot, by themselves, prove that motion 
 
 1. Reduce the issue to the shortest deterministic interaction.
 2. Capture the initial screenshot and accessibility tree.
-3. Prefer accessibility identifiers, labels, and `sim-cli wait` over raw coordinates and arbitrary sleeps.
+3. Prefer accessibility identifiers, labels, and `sim wait` over raw coordinates and arbitrary sleeps.
 4. Perform one meaningful interaction at a time.
 5. Capture the final screenshot, accessibility tree, and relevant log window.
 6. Repeat once when the issue may be intermittent. Record whether reproduction is deterministic.
@@ -43,7 +43,7 @@ Do not implement a fix when the user only asked for diagnosis. If a fix is reque
 Stage the app before recording. Keep a take focused on one interaction and normally between two and six seconds.
 
 1. Verify required simulator state such as orientation, appearance, locale, and software-keyboard visibility.
-2. Start `sim-cli record-video` with an explicit output path outside the source tree unless the user requested an artifact there.
+2. Start `sim record-video` with an explicit output path outside the source tree unless the user requested an artifact there.
 3. Run start, interaction, settling capture, and stop in one orchestration block. Do not inspect frames or reason at length while recording.
 4. Capture both directions when asymmetry matters, such as presenting and dismissing or keyboard opening and closing.
 5. Repeat the same motion after a fix with the same device, state, and interaction.

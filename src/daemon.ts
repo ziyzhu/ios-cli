@@ -90,5 +90,5 @@ export function startDaemon(port: number) {
       return json({ error: "not found" }, 404);
     },
   });
-  process.stderr.write(`sim-cli daemon listening on http://127.0.0.1:${port}\n`);
+  process.stderr.write(`sim daemon listening on http://127.0.0.1:${port}\n`);
 }

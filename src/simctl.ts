@@ -43,7 +43,7 @@ export function resolveDeviceSpec(spec: string): string {
   if (matches.length === 1) return matches[0]!.udid;
   const booted = matches.filter((m) => m.state === "Booted");
   if (booted.length === 1) return booted[0]!.udid;
-  if (matches.length === 0) throw new Error(`no simulator named "${spec}"; see \`sim-cli devices\``);
+  if (matches.length === 0) throw new Error(`no simulator named "${spec}"; see \`sim devices\``);
   throw new Error(
     `"${spec}" matches ${matches.length} simulators: ` +
     matches.map((m) => `${m.udid} [${m.runtime}, ${m.state}]`).join(", ") +

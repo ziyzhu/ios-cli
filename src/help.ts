@@ -407,8 +407,8 @@ export function usageOf(c: Command): string {
   return args ? `${c.name} ${args}` : c.name;
 }
 
-const FOOTER = `Run \`sim-cli help <command>\` (or \`sim-cli <command> --help\`) for details on a command.
-\`sim-cli agent-context\` returns the full command schema as machine-readable JSON.
+const FOOTER = `Run \`sim help <command>\` (or \`sim <command> --help\`) for details on a command.
+\`sim agent-context\` returns the full command schema as machine-readable JSON.
 All commands write JSON to stdout on success and {"error": "..."} to stderr on failure.`;
 
 function renderFlagLine(f: Flag, indent: string): string {
@@ -420,10 +420,10 @@ function renderFlagLine(f: Flag, indent: string): string {
 
 export function overview(): string {
   const lines = [
-    "sim-cli — agent-friendly iOS simulator CLI",
+    "sim — agent-friendly iOS simulator CLI",
     "",
     "USAGE",
-    "  sim-cli [globals] <command> [args] [flags]",
+    "  sim [globals] <command> [args] [flags]",
     "",
     "GLOBALS",
     ...GLOBALS.map((f) => renderFlagLine(f, "  ")),
@@ -449,7 +449,7 @@ export function overview(): string {
 export function commandHelp(name: string): string | undefined {
   const c = resolveCommand(name);
   if (!c) return undefined;
-  const lines = [`USAGE\n  sim-cli ${usageOf(c)}`, "", c.summary];
+  const lines = [`USAGE\n  sim ${usageOf(c)}`, "", c.summary];
   if (c.subcommands) {
     lines.push("", "SUBCOMMANDS");
     for (const s of c.subcommands) {
@@ -481,7 +481,7 @@ export function enumError(label: string, got: string, valid: readonly string[]):
 export function agentContext() {
   return {
     schema_version: SCHEMA_VERSION,
-    cli: "sim-cli",
+    cli: "sim",
     description: "agent-friendly iOS simulator CLI; JSON to stdout on success, {\"error\":...} to stderr on failure",
     globals: GLOBALS.map(flagContext),
     commands: Object.fromEntries(COMMANDS.map((c) => [c.name, commandContext(c)])),

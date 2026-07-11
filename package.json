@@ -2,10 +2,10 @@
   "name": "sim-cli",
   "version": "0.1.0",
   "type": "module",
-  "bin": { "sim-cli": "./src/index.ts" },
+  "bin": { "sim": "./src/index.ts" },
   "scripts": {
     "start": "bun run src/index.ts",
-    "build": "bun build src/index.ts --compile --outfile dist/sim-cli",
+    "build": "bun build src/index.ts --compile --outfile dist/sim",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

@@ -1,6 +1,6 @@
 ---
 name: sim-cli
-description: Drive a booted iOS Simulator from the command line — build/install/launch apps, read accessibility trees, tap/swipe/type, capture screenshots and logs. Use when the user asks to interact with a simulator, automate iOS UI, run a built app, debug a UI flow, or grab a screenshot/AX dump from the iPhone Simulator.
+description: Drive a booted iOS Simulator with the `sim` executable — build/install/launch apps, read accessibility trees, tap/swipe/type, capture screenshots and logs. Use when the user asks to interact with a simulator, automate iOS UI, run a built app, debug a UI flow, or grab a screenshot/AX dump from the iPhone Simulator.
 ---
 
 # sim-cli
@@ -11,7 +11,7 @@ Thin agent-friendly wrapper around `xcrun simctl`, `xcodebuild`, and `idb_compan
 
 Before issuing any command, verify the environment:
 
-1. A simulator is booted: `sim-cli devices`. If none, ask the user which device to boot or run `sim-cli devices boot <device>`.
+1. A simulator is booted: `sim devices`. If none, ask the user which device to boot or run `sim devices boot <device>`.
 2. `idb_companion` is running for that UDID: `pgrep -fl idb_companion`. If missing for the target sim, start one:
    ```
    idb_companion --udid <UDID> --grpc-domain-sock /tmp/idb/<UDID>_companion.sock --only simulator &
@@ -22,16 +22,16 @@ Before issuing any command, verify the environment:
 
 ## Invocation
 
-From the repo root: `bun run src/index.ts <cmd>` during development, or `./dist/sim-cli <cmd>` after `bun run build`. Globals can be in any position:
+From the repo root: `bun run src/index.ts <cmd>` during development, or `./dist/sim <cmd>` after `bun run build`. Globals can be in any position:
 
 - `--device <name|udid|booted>` (or `SIM_DEVICE`; legacy `--udid`/`IDB_UDID` also accepted) — names come from `devices rename`, resolve case-insensitively, and prefer a booted match when several runtimes share the name
 - `--companion <host:port|/path/to.sock>` (or `IDB_COMPANION`)
 
 Help is progressively disclosed across three layers — reach for the deepest one you need rather than memorizing the table below:
 
-1. `sim-cli --help` — grouped one-line summary of every command.
-2. `sim-cli help <command>` (or `sim-cli <command> --help`) — flags, subcommands, and notes for one command.
-3. `sim-cli agent-context` — the full command schema as versioned machine-readable JSON (`schema_version`, per-command `args`/`flags` with `enum` values, `aliases`, `subcommands`). Parse this to learn the surface programmatically; it is generated from the same source as the CLI, so it never drifts.
+1. `sim --help` — grouped one-line summary of every command.
+2. `sim help <command>` (or `sim <command> --help`) — flags, subcommands, and notes for one command.
+3. `sim agent-context` — the full command schema as versioned machine-readable JSON (`schema_version`, per-command `args`/`flags` with `enum` values, `aliases`, `subcommands`). Parse this to learn the surface programmatically; it is generated from the same source as the CLI, so it never drifts.
 
 ## Command map
 
@@ -86,28 +86,28 @@ Build errors are surfaced: on `xcodebuild` failure, the output lands in the `{"e
 
 **Smoke-test a freshly built app**
 ```
-sim-cli run com.acme.MyApp                       # auto-detects workspace + scheme, builds, installs, launches, captures logs
-sim-cli screenshot --out /tmp/after-launch.png
-sim-cli describe
-sim-cli logs                                      # find the capture file run just started
-tail -f "$(sim-cli logs | jq -r '.[0].file')" | jq -c 'select(.subsystem=="com.acme.MyApp")'
+sim run com.acme.MyApp                       # auto-detects workspace + scheme, builds, installs, launches, captures logs
+sim screenshot --out /tmp/after-launch.png
+sim describe
+sim logs                                      # find the capture file run just started
+tail -f "$(sim logs | jq -r '.[0].file')" | jq -c 'select(.subsystem=="com.acme.MyApp")'
 ```
 
 **Skip the build for a fast inner loop** — when you already have an artifact:
 ```
-sim-cli run com.acme.MyApp --app /path/to/MyApp.app
+sim run com.acme.MyApp --app /path/to/MyApp.app
 ```
 
 **Drive a UI flow without hardcoding coordinates** — prefer `tap --label` over raw coordinates; the AX tree is the source of truth. Use `describe` + `jq` to inspect when needed.
 ```
-sim-cli describe | jq '.. | objects | select(.AXLabel? == "Sign In")'
-sim-cli tap --label "Sign In" --wait 5000 --stable 200
-sim-cli fill --label "Email" "user@example.com" --replace
+sim describe | jq '.. | objects | select(.AXLabel? == "Sign In")'
+sim tap --label "Sign In" --wait 5000 --stable 200
+sim fill --label "Email" "user@example.com" --replace
 ```
 
 **Jump straight into a deep link** instead of tapping through:
 ```
-sim-cli openurl "myapp://orders/123"
+sim openurl "myapp://orders/123"
 ```
 
 **Capture state for analysis** — `describe --screenshot` returns both the AX tree and a base64 PNG in one shot, ideal for a single round-trip when investigating a screen.
@@ -123,7 +123,7 @@ sim-cli openurl "myapp://orders/123"
 - `tap --label/--role/--text` does substring matching against the AX tree (case-insensitive). If multiple elements match, the first is tapped — disambiguate by combining flags or using `describe` + `jq`.
 - `run` detaches a verbose ndjson `log stream` (all subsystems, debug level) to `~/.sim-cli/logs/<udid>.log`, truncated each run, and reports `{logs:{file,pid}}`. The streamer outlives `run` and is replaced by the next `run`. There is no stop command — to end one early, kill the `pid` from `logs`/`config` (`kill -- -<pid>` to take the whole group). The verbose firehose grows fast (tens of MB/min), so don't leave one running between sessions.
   ```
-  tail -f "$(sim-cli logs | jq -r '.[0].file')" | jq -c 'select(.subsystem=="com.acme.MyApp")'
+  tail -f "$(sim logs | jq -r '.[0].file')" | jq -c 'select(.subsystem=="com.acme.MyApp")'
   ```
 - `logs` and `config` only read `~/.sim-cli/` state — they never touch the simulator, so they're safe to call anytime (no companion needed).
 

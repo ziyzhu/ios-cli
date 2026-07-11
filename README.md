@@ -15,7 +15,7 @@ companion gRPC endpoint, with JSON in / JSON out for easy scripting.
 
 ```sh
 bun install
-bun run build    # produces ./dist/sim-cli
+bun run build    # produces ./dist/sim
 ```
 
 Or run directly:
@@ -27,7 +27,7 @@ bun run src/index.ts --help
 ## Usage
 
 ```
-sim-cli [--device <name|udid|booted>] [--companion <host:port>] <command> [args]
+sim [--device <name|udid|booted>] [--companion <host:port>] <command> [args]
 ```
 
 Defaults: `--device booted`, `--companion localhost:10882`. Overridable via
@@ -36,9 +36,9 @@ Defaults: `--device booted`, `--companion localhost:10882`. Overridable via
 a UDID, or `booted`; names resolve case-insensitively, preferring a booted
 match when several runtimes share the name.
 
-Help is progressively disclosed: `sim-cli --help` prints a grouped command
-overview; `sim-cli help <command>` (or `sim-cli <command> --help`) discloses the
-flags and details for one command; `sim-cli agent-context` returns the full
+Help is progressively disclosed: `sim --help` prints a grouped command
+overview; `sim help <command>` (or `sim <command> --help`) discloses the
+flags and details for one command; `sim agent-context` returns the full
 command schema as versioned machine-readable JSON (`schema_version`, per-command
 args/flags with enum values and aliases) — the layer an agent should consume to
 learn the surface without parsing help text.

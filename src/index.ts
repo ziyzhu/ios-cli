@@ -134,7 +134,7 @@ async function main() {
     const r = await resolve.resolveCompanion({
       explicit: explicitCompanion,
       udid,
-      log: (m) => { if (verbose) process.stderr.write(`sim-cli: ${m}\n`); },
+      log: (m) => { if (verbose) process.stderr.write(`sim: ${m}\n`); },
     });
     resolvedTarget = r.endpoint;
     return resolvedTarget;

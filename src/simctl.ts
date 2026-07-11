@@ -5,6 +5,12 @@ import { basename, dirname, join } from "node:path";
 
 export type Udid = string | "booted";
 
+export interface DeviceState {
+  name: string;
+  udid: string;
+  state: string;
+}
+
 function run(args: string[], env?: NodeJS.ProcessEnv, input?: string): { stdout: string; stderr: string; code: number } {
   const r = spawnSync("xcrun", ["simctl", ...args], { encoding: "utf8", env, input });
   return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", code: r.status ?? 1 };
@@ -46,9 +52,15 @@ export function resolveDeviceSpec(spec: string): string {
 }
 
 export function deviceName(udid: string): string | undefined {
+  return deviceState(udid)?.name;
+}
+
+export function deviceState(udid: string): DeviceState | undefined {
   const buckets = (listDevices() as any)?.devices ?? {};
   for (const list of Object.values(buckets) as any[]) {
-    for (const d of list) if (d?.udid === udid) return d?.name;
+    for (const d of list) {
+      if (d?.udid === udid) return { name: d.name, udid: d.udid, state: d.state };
+    }
   }
   return undefined;
 }
@@ -132,6 +144,21 @@ export function boot(udid: Udid): void {
   if (r.code !== 0 && !/current state: Booted/.test(r.stderr)) {
     throw new Error(r.stderr.trim() || "boot failed");
   }
+}
+
+export function shutdown(udid: string): DeviceState {
+  const before = deviceState(udid);
+  if (!before) throw new Error(`no simulator with UDID ${udid}`);
+  if (before.state !== "Shutdown") {
+    const r = run(["shutdown", udid]);
+    if (r.code !== 0 && !/current state: Shutdown/.test(r.stderr)) {
+      throw new Error(r.stderr.trim() || "shutdown failed");
+    }
+  }
+  const after = deviceState(udid);
+  if (!after) throw new Error(`simulator ${udid} disappeared after shutdown`);
+  if (after.state !== "Shutdown") throw new Error(`simulator ${udid} is ${after.state} after shutdown`);
+  return after;
 }
 
 export function appMinimumOSVersion(appPath: string): string | undefined {

@@ -182,6 +182,16 @@ async function main() {
           ok({ ok: true, udid: target, state: "Booted" });
         } catch (e) { fail((e as Error).message); }
       }
+      if (sub === "shutdown") {
+        const specs = pos.slice(1);
+        if (specs.length === 0) fail("devices shutdown requires <device>...");
+        if (specs.includes("booted")) fail("devices shutdown requires explicit simulator names or UDIDs, not booted");
+        try {
+          const targets = specs.map((spec) => ({ requested: spec, udid: simctl.resolveDeviceSpec(spec) }));
+          const devices = targets.map(({ requested, udid }) => ({ requested, ...simctl.shutdown(udid) }));
+          ok({ ok: true, devices });
+        } catch (e) { fail((e as Error).message); }
+      }
     }
     case "list-apps": ok(simctl.listApps(udid));
     case "uninstall": {

@@ -105,7 +105,7 @@ export const COMMANDS: Command[] = [
       { name: "connect", aliases: ["enable"], summary: "connect the Mac keyboard and suppress the software keyboard" },
       { name: "disconnect", aliases: ["disable"], summary: "disconnect the Mac keyboard and allow the software keyboard" },
     ],
-    notes: "This changes Simulator's host-wide Connect Hardware Keyboard setting, so it applies to every open simulator.",
+    notes: "sim-cli automatically connects the host-wide hardware keyboard before every operational command. `keyboard disconnect` overrides it for that invocation; the next command reconnects it.",
   },
   {
     name: "defaults", group: "STATE", summary: "read and write simulator app defaults",

@@ -118,6 +118,9 @@ async function main() {
     process.exit(0);
   }
   if (cmd === "agent-context") ok(agentContext());
+  try {
+    if (!simctl.hardwareKeyboardConnected()) simctl.setHardwareKeyboardConnected(true);
+  } catch (e) { fail(`could not connect Simulator hardware keyboard: ${(e as Error).message}`); }
   const explicitDevice = (flags.device as string) || (flags.udid as string)
     || process.env.SIM_DEVICE || process.env.IDB_UDID;
   const deviceSpec = explicitDevice || "booted";

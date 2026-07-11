@@ -55,7 +55,7 @@ learn the surface without parsing help text.
 | `devices boot <device>` | boot a simulator and wait until it is ready |
 | `list-apps` | list installed apps |
 | `uninstall <bundle_id>` | remove app |
-| `keyboard status\|connect\|disconnect` | manage Simulator's host-wide hardware keyboard setting (`enable`/`disable` aliases) |
+| `keyboard status\|connect\|disconnect` | manage Simulator's host-wide hardware keyboard setting (`enable`/`disable` aliases); sim-cli connects it automatically before every operational command |
 | `file <list\|pull\|push\|delete\|mkdir\|mv> <bundle_id> ...` | read/write the app container (`list`/`delete` accept `ls`/`rm` aliases); `--container app\|data` (default `data`), `--dest <dir>` for `file pull` |
 
 **App**

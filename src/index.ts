@@ -118,9 +118,6 @@ async function main() {
     process.exit(0);
   }
   if (cmd === "agent-context") ok(agentContext());
-  try {
-    if (!simctl.hardwareKeyboardConnected()) simctl.setHardwareKeyboardConnected(true);
-  } catch (e) { fail(`could not connect Simulator hardware keyboard: ${(e as Error).message}`); }
   const explicitDevice = (flags.device as string) || (flags.udid as string)
     || process.env.SIM_DEVICE || process.env.IDB_UDID;
   const deviceSpec = explicitDevice || "booted";
@@ -260,10 +257,17 @@ async function main() {
     }
     case "keyboard": {
       const sub = pos[0] ? subcommandName("keyboard", pos[0]) : "status";
+      const device = simctl.deviceName(udid === "booted" ? soleBootedUdid() : udid) ?? explicitDevice ?? "";
       try {
-        if (sub === "connect") simctl.setHardwareKeyboardConnected(true);
-        if (sub === "disconnect") simctl.setHardwareKeyboardConnected(false);
-        ok({ ok: true, connected: simctl.hardwareKeyboardConnected(), scope: "host" });
+        let live: boolean | null;
+        if (sub === "connect" || sub === "disconnect") {
+          const connected = sub === "connect";
+          simctl.setHardwareKeyboardConnected(connected);
+          live = await window.setLiveHardwareKeyboard(device, connected);
+        } else {
+          live = await window.liveHardwareKeyboard(device);
+        }
+        ok({ ok: true, device, live, defaultForNewBoots: simctl.hardwareKeyboardConnected() });
       } catch (e) { fail((e as Error).message); }
     }
     case "defaults": {

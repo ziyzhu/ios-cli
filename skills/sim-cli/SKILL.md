@@ -43,7 +43,7 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | Boot and wait | `devices boot <device>` |
 | What's installed | `list-apps` |
 | Remove app | `uninstall <bundle_id>` |
-| Control keyboard | `keyboard status\|connect\|disconnect` (`enable`/`disable` aliases); sim-cli connects the host-wide setting automatically before every operational command |
+| Control keyboard | `keyboard status\|connect\|disconnect` (`enable`/`disable` aliases); toggles the device's live hardware keyboard via the Simulator I/O menu. `disconnect` shows the software keyboard like a real device (needs an open Simulator window + Accessibility permission); state persists |
 | Read/write a container file | `file list\|pull\|push\|delete\|mkdir\|mv <bundle_id> ...` (`ls`/`rm` aliases accepted; `--container app\|data`, `--dest <dir>` for `file pull`) |
 | Build, install, launch | `run <bundle_id> [args...]` (see flags below) |
 | Launch a prebuilt artifact | `run <bundle_id> --app <path>` |

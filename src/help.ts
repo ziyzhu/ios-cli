@@ -99,13 +99,13 @@ export const COMMANDS: Command[] = [
     ],
   },
   {
-    name: "keyboard", group: "DEVICE", summary: "manage the Simulator hardware keyboard",
+    name: "keyboard", group: "DEVICE", summary: "control the target device's hardware keyboard",
     subcommands: [
-      { name: "status", summary: "report whether the Mac keyboard is connected" },
-      { name: "connect", aliases: ["enable"], summary: "connect the Mac keyboard and suppress the software keyboard" },
-      { name: "disconnect", aliases: ["disable"], summary: "disconnect the Mac keyboard and allow the software keyboard" },
+      { name: "status", summary: "report the device's live hardware-keyboard state" },
+      { name: "connect", aliases: ["enable"], summary: "connect the Mac keyboard, suppressing the software keyboard" },
+      { name: "disconnect", aliases: ["disable"], summary: "disconnect the Mac keyboard so the software keyboard shows, like a real device" },
     ],
-    notes: "sim-cli automatically connects the host-wide hardware keyboard before every operational command. `keyboard disconnect` overrides it for that invocation; the next command reconnects it.",
+    notes: "Toggles the target device's live hardware-keyboard connection through the Simulator I/O menu, so it applies to the running sim immediately (needs an open Simulator window + Accessibility permission; `live` is null when headless). Disconnect to make the sim behave like a real phone — the software keyboard appears on focus. `sim` no longer auto-connects, so the state persists across commands. `defaultForNewBoots` is the host pref that freshly booted sims inherit. Note: HID text entry (`type`/`fill`) re-suppresses the software keyboard until reboot; drive the on-screen keys with `tap` instead when you need it visible.",
   },
   {
     name: "defaults", group: "STATE", summary: "read and write simulator app defaults",

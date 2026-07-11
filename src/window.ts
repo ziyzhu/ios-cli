@@ -95,6 +95,52 @@ return out`);
     .sort((a, b) => a.device.localeCompare(b.device, undefined, { numeric: true }));
 }
 
+const KEYBOARD_MENU_ITEM =
+  `menu item "Connect Hardware Keyboard" of menu 1 of menu item "Keyboard" of menu 1 of menu bar item "I/O" of menu bar 1`;
+
+function simWindowTitle(device: string): string | undefined {
+  try {
+    return listSimWindows().find((w) => w.device === device)?.title;
+  } catch {
+    return undefined;
+  }
+}
+
+// The Simulator I/O menu reflects the frontmost window and the menu-item state
+// only settles across focus changes, so activate Simulator, raise the device's
+// window, and read/toggle/re-read in ONE AppleScript — separate osascript
+// processes let focus bounce back to the terminal mid-sequence and read stale.
+// `want` null just reads; true/false ensures that state. An unchecked item
+// reports AXMenuItemMarkChar as `missing value`. Returns null when the device
+// has no open window (headless / Simulator not running).
+function driveKeyboardMenu(title: string, want: boolean | null): boolean {
+  const ensure = want === null ? "" : `
+  if isConnected is not ${want} then
+    click mi
+    delay 0.4
+    set isConnected to ${want}
+  end if`;
+  const out = osascript(`tell application "Simulator" to activate
+tell application "System Events" to tell process "Simulator"
+  perform action "AXRaise" of window ${quote(title)}
+  delay 0.3
+  set mi to ${KEYBOARD_MENU_ITEM}
+  set isConnected to (value of attribute "AXMenuItemMarkChar" of mi is not missing value)${ensure}
+  return isConnected as text
+end tell`);
+  return out.trim() === "true";
+}
+
+export function liveHardwareKeyboard(device: string): boolean | null {
+  const title = simWindowTitle(device);
+  return title ? driveKeyboardMenu(title, null) : null;
+}
+
+export function setLiveHardwareKeyboard(device: string, connected: boolean): boolean | null {
+  const title = simWindowTitle(device);
+  return title ? driveKeyboardMenu(title, connected) : null;
+}
+
 function positions(count: number): string[] {
   if (count <= 1) return ["center"];
   if (count === 2) return ["left-half", "right-half"];

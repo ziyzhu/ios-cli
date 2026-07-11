@@ -45,6 +45,14 @@ export function resolveDeviceSpec(spec: string): string {
   );
 }
 
+export function deviceName(udid: string): string | undefined {
+  const buckets = (listDevices() as any)?.devices ?? {};
+  for (const list of Object.values(buckets) as any[]) {
+    for (const d of list) if (d?.udid === udid) return d?.name;
+  }
+  return undefined;
+}
+
 export function rename(udid: Udid, name: string): void {
   ok(["rename", udid, name]);
 }

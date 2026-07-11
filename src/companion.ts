@@ -1,15 +1,11 @@
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { parse } from "protobufjs";
 import { textToKeyEvents } from "./keymap.ts";
+import PROTO_SOURCE from "./idb.proto" with { type: "text" };
 
-const PROTO_PATH = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "./idb.proto",
-);
-
-const pkgDef = protoLoader.loadSync(PROTO_PATH, {
+const root = parse(PROTO_SOURCE).root;
+const pkgDef = protoLoader.fromJSON(root.toJSON(), {
   keepCase: true,
   longs: String,
   enums: Number,

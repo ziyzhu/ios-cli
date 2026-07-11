@@ -1,0 +1,4 @@
+interface:
+  display_name: "sim"
+  short_description: "Drive and inspect iOS Simulator from the CLI"
+  default_prompt: "Use $sim-cli to drive and inspect this iOS Simulator task."

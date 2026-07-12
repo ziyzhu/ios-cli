@@ -8,6 +8,7 @@ import * as proc from "./process.ts";
 import * as companion from "./companion.ts";
 import * as resolve from "./resolve.ts";
 import * as window from "./window.ts";
+import * as invocations from "./invocations.ts";
 import { overview, commandHelp, agentContext, resolveSubcommand, resolveCommand, enumError, ENUMS } from "./help.ts";
 
 type Flags = Record<string, string | boolean | string[]>;
@@ -90,16 +91,19 @@ function encode(stream: NodeJS.WriteStream, data: unknown): string {
   return stream.isTTY ? JSON.stringify(data, null, 2) : JSON.stringify(data);
 }
 function ok(data: unknown): never {
+  invocations.recordOutput(data);
   if (data !== undefined) process.stdout.write(encode(process.stdout, data) + "\n");
   process.exit(0);
 }
 function fail(msg: string): never {
+  invocations.recordError(msg);
   process.stderr.write(encode(process.stderr, { error: msg }) + "\n");
   process.exit(1);
 }
 
 async function main() {
   const argv = process.argv.slice(2);
+  invocations.begin(argv);
   if (argv.length === 0 || argv[0] === "-h" || argv[0] === "--help") {
     process.stdout.write(overview());
     process.exit(0);
@@ -498,6 +502,7 @@ async function main() {
         dir: resolve.STATE_DIR,
         companions: resolve.readRegistry(),
         captures: simctl.listCaptures(),
+        invocations: invocations.invocationsFile(),
       });
     }
     case "logs": {

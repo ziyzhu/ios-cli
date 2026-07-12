@@ -49,9 +49,10 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | Build, install, launch | `run <bundle_id> [args...]` (see flags below) |
 | Launch a prebuilt artifact | `run <bundle_id> --app <path>` |
 | Open a deep link / URL | `openurl <url>` |
-| Inspect `~/.sim-cli/` state | `config` → dir, companion registry, captured log files |
+| Inspect `~/.sim-cli/` state | `config` → dir, companion registry, captured log files, invocation log |
 | Captured log files | `logs [--device <name\|udid>]` → list of `{udid,file,size,modified,capturing,pid}` |
 | Read a captured log | `tail -f ~/.sim-cli/logs/<udid>.log \| jq ...` (path comes from `logs`) |
+| Review past `sim` runs | `jq -c 'select(.exit != 0)' ~/.sim-cli/logs/invocations.jsonl` — one line per invocation |
 | Pixel screenshot | `screenshot [--out file.png] [--base64]` |
 | AX tree | `describe [--point x,y] [--screenshot]` |
 | Resource gauges | `stats <bundle_id> [--watch]` — CPU %, footprint, disk I/O; app process only (WebKit helpers excluded) |
@@ -110,6 +111,18 @@ sim fill --label "Email" "user@example.com" --replace
 sim openurl "myapp://orders/123"
 ```
 
+**Inspect memory usage** — separate the app's memory from the host's. Inside the sim:
+```
+sim memory com.acme.MyApp                     # footprint breakdown
+sim memory leaks com.acme.MyApp
+sim stats com.acme.MyApp --watch              # live CPU %, footprint, disk I/O
+sim memory warn                               # simulate a device-wide memory warning
+```
+`memory` and `stats` cover the app process only, so an app with WKWebViews (each its own process) uses more than they report. For the host, `ps`-summing a sim's `launchd_sim` tree overcounts shared framework pages — the number that actually predicts trouble is swap:
+```
+memory_pressure | tail -3 && sysctl -n vm.swapusage
+```
+
 **Capture state for analysis** — `describe --screenshot` returns both the AX tree and a base64 PNG in one shot, ideal for a single round-trip when investigating a screen.
 
 ## Gotchas
@@ -125,7 +138,9 @@ sim openurl "myapp://orders/123"
   ```
   tail -f "$(sim logs | jq -r '.[0].file')" | jq -c 'select(.subsystem=="com.acme.MyApp")'
   ```
+- A SpringBoard crash (black screen, home screen relaunching) is the sim's own system UI, not your app — nearly always host memory pressure, since each booted sim runs ~200+ processes. Check `sysctl -n vm.swapusage` first: swap near full means the kernel is jetsamming, and no amount of app debugging will fix it. Shut down the sims you aren't using (`sim devices shutdown <name>...`), then reboot the sick one; only `xcrun simctl erase <udid>` (wipes its apps, keychain, settings) if it survives that.
 - `logs` and `config` only read `~/.sim-cli/` state — they never touch the simulator, so they're safe to call anytime (no companion needed).
+- Every `sim` invocation appends a line to `~/.sim-cli/logs/invocations.jsonl` — `{ts,ms,cmd,argv,cwd,pid,exit}` plus `output` (the field/type shape of the payload, not its content) or `error`. Use it to retrace what a prior session ran and what failed. `--env` values are redacted; `SIM_NO_LOG=1` disables it.
 
 ## Parsing output
 

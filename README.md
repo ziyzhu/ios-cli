@@ -70,10 +70,16 @@ learn the surface without parsing help text.
 
 | Command | Description |
 | --- | --- |
-| `config` | dump `~/.sim-cli/`: the `dir` path, the companion registry (per-UDID idb companions, each with `alive`), and `captures` (the log files `run` produced). |
+| `config` | dump `~/.sim-cli/`: the `dir` path, the companion registry (per-UDID idb companions, each with `alive`), `captures` (the log files `run` produced), and `invocations` (the invocation log). |
 | `logs [--device <name\|udid>]` | list captured log files from prior runs — `udid`, `file`, `size`, `modified`, `capturing`, and live `pid`. Read a file directly with `tail`/`jq`. `--device` scopes to one sim. |
 | `defaults read\|write\|delete <domain> ...` | manage simulator defaults; `write` accepts `--type string\|bool\|int\|float` |
 | `pasteboard get\|set [value]` | read or replace the simulator pasteboard |
+
+Every invocation appends one JSON line to `~/.sim-cli/logs/invocations.jsonl`: `ts`, `ms`, `cmd`, `argv` (with `--env` values redacted), `cwd`, `pid`, `exit`, and then either `output` — the *shape* of the result (field names and value types, arrays sampled from their first element, data-keyed dictionaries collapsed to `*`), never its content — or `error` on failure. Set `SIM_NO_LOG=1` to disable. The file is never rotated; delete it whenever.
+
+```
+jq -c 'select(.exit != 0) | {ts, cmd, error}' ~/.sim-cli/logs/invocations.jsonl
+```
 
 **Observe**
 

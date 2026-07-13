@@ -85,14 +85,38 @@ async function spawnCompanion(udid: string, port: number): Promise<number> {
   proc.unref();
   const pid = proc.pid!;
   const endpoint = `localhost:${port}`;
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     if (!pidAlive(pid)) throw new Error(`idb_companion exited before becoming ready (pid ${pid})`);
     const got = await probe(endpoint);
     if (got === udid) return pid;
     await new Promise((r) => setTimeout(r, 150));
   }
-  throw new Error(`idb_companion didn't become ready within 8s (pid ${pid}, port ${port})`);
+  throw new Error(`idb_companion didn't become ready within 30s (pid ${pid}, port ${port})`);
+}
+
+export function parseCompanionListing(ps: string, udid: string): { pid: number; port: number }[] {
+  const out: { pid: number; port: number }[] = [];
+  for (const line of ps.split("\n")) {
+    if (!line.includes("idb_companion")) continue;
+    const pid = line.match(/^\s*(\d+)\s/)?.[1];
+    const u = line.match(/--udid\s+(\S+)/)?.[1];
+    const port = line.match(/--grpc-port\s+(\d+)/)?.[1];
+    if (!pid || !u || !port) continue;
+    if (u.toUpperCase() !== udid.toUpperCase()) continue;
+    out.push({ pid: Number(pid), port: Number(port) });
+  }
+  return out;
+}
+
+async function adoptCompanion(udid: string): Promise<RegistryEntry | undefined> {
+  const r = spawnSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+  if (r.status !== 0) return undefined;
+  for (const c of parseCompanionListing(r.stdout, udid)) {
+    const endpoint = `localhost:${c.port}`;
+    if (await probe(endpoint) === udid) return { endpoint, pid: c.pid, spawnedAt: Date.now() };
+  }
+  return undefined;
 }
 
 function resolveUdid(udid: string): string {
@@ -137,6 +161,15 @@ export async function resolveCompanion(opts: ResolveOpts): Promise<Resolved> {
     }
     delete reg[wantUdid];
     saveRegistry(reg);
+  }
+
+  const adopted = await adoptCompanion(wantUdid);
+  if (adopted) {
+    const reg2 = loadRegistry();
+    reg2[wantUdid] = adopted;
+    saveRegistry(reg2);
+    log(`adopted running idb_companion for ${wantUdid} on ${adopted.endpoint} (pid ${adopted.pid})`);
+    return { endpoint: adopted.endpoint, udid: wantUdid, spawned: false };
   }
 
   if (!autospawn) throw new Error(`no sim-cli-managed companion for ${wantUdid} and autospawn disabled`);

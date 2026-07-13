@@ -147,8 +147,9 @@ export const COMMANDS: Command[] = [
       { name: "scheme", type: "string", metavar: "name", desc: "build scheme (auto-detected if only one)" },
       { name: "configuration", type: "string", enum: ENUMS.configuration, default: "Debug", desc: "build configuration" },
       { name: "derived-data", type: "string", metavar: "path", desc: "-derivedDataPath for a self-contained build product" },
+      { name: "force", type: "bool", desc: "build even when the source tree is unchanged" },
     ],
-    notes: "Build-only, no device needed: builds once for `generic/platform=iOS Simulator` and prints the resolved `.app` so it can be installed across a pool via `run --app <path>`. Prefer this over invoking `xcodebuild` directly.",
+    notes: "Build-only, no device needed: builds once for `generic/platform=iOS Simulator` and prints the resolved `.app` so it can be installed across a pool via `run --app <path>`. Prefer this over invoking `xcodebuild` directly. When the git tree (HEAD + dirty files) is unchanged since the last build of the same workspace/project + scheme + configuration and that `.app` still exists, xcodebuild is skipped entirely and the result carries `skipped: true`; `--force` overrides.",
   },
   {
     name: "run", group: "APP", summary: "build -> install -> terminate prior -> launch -> wait -> capture logs",
@@ -163,8 +164,9 @@ export const COMMANDS: Command[] = [
       { name: "configuration", type: "string", enum: ENUMS.configuration, default: "Debug", desc: "build configuration" },
       { name: "app", type: "string", metavar: "path", desc: "launch a prebuilt .app instead of building" },
       { name: "env", type: "string", metavar: "KEY=VAL", repeatable: true, desc: "app env var, overrides scheme value" },
+      { name: "force", type: "bool", desc: "build even when the source tree is unchanged" },
     ],
-    notes: "Device logs stream to ~/.sim-cli/logs/<udid>.log (verbose ndjson, truncated each run). See `logs` / `config`.",
+    notes: "Skips the build when the git tree is unchanged since the last build of the same target (`built.skipped: true`; `--force` overrides). Device logs stream to ~/.sim-cli/logs/<udid>.log (verbose ndjson, truncated each run). See `logs` / `config`.",
   },
   {
     name: "openurl", group: "APP", summary: "open a URL / deep link",

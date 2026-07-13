@@ -9,13 +9,14 @@ import * as companion from "./companion.ts";
 import * as resolve from "./resolve.ts";
 import * as window from "./window.ts";
 import * as invocations from "./invocations.ts";
+import * as builds from "./build.ts";
 import { overview, commandHelp, agentContext, resolveSubcommand, resolveCommand, enumError, ENUMS } from "./help.ts";
 
 type Flags = Record<string, string | boolean | string[]>;
 
 const MULTI_FLAGS = new Set(["env"]);
 const BOOLEAN_FLAGS = new Set([
-  "base64", "screenshot", "help", "verbose", "missing", "replace", "watch", "vc",
+  "base64", "screenshot", "help", "verbose", "missing", "replace", "watch", "vc", "force",
 ]);
 const SHORT_FLAGS: Record<string, string> = {
   v: "verbose",
@@ -132,11 +133,15 @@ async function main() {
     const configuration = (flags.configuration as string | undefined) ?? "Debug";
     const derivedData = flags["derived-data"] as string | undefined;
     const opts = { ...container, scheme, configuration, derivedData };
-    try { await simctl.build(opts); }
+    let result: builds.EnsureResult;
+    try { result = await builds.ensureBuilt(opts, !!flags.force); }
     catch (e) { fail((e as Error).message); }
-    const app = simctl.resolveBuiltApp(opts);
-    if (!app) fail("Build succeeded but the .app path could not be resolved");
-    ok({ app, built: { ...container, scheme, configuration, ...(derivedData ? { derivedData } : {}) } });
+    if (!result.app) fail("Build succeeded but the .app path could not be resolved");
+    ok({
+      app: result.app,
+      ...(result.skipped ? { skipped: true } : {}),
+      built: { ...container, scheme, configuration, ...(derivedData ? { derivedData } : {}) },
+    });
   }
   const explicitDevice = (flags.device as string) || (flags.udid as string)
     || process.env.SIM_DEVICE || process.env.IDB_UDID;
@@ -452,21 +457,27 @@ async function main() {
       const scheme = (flags.scheme as string | undefined)
         ?? (container.workspace || container.project ? simctl.detectScheme(container) : undefined);
 
-      let built: { workspace?: string; project?: string; scheme?: string } | undefined;
+      let built: { workspace?: string; project?: string; scheme?: string; skipped?: boolean } | undefined;
+      let appPath = prebuilt;
       if (!prebuilt) {
         if (!container.workspace && !container.project) {
           fail("No .xcworkspace/.xcodeproj found in CWD; pass --workspace, --project, or --app");
         }
         if (!scheme) fail("Could not auto-detect scheme; pass --scheme <name>");
+        let result: builds.EnsureResult;
         try {
-          await simctl.build({ ...container, scheme, configuration: flags.configuration as string | undefined });
+          result = await builds.ensureBuilt(
+            { ...container, scheme, configuration: flags.configuration as string | undefined },
+            !!flags.force,
+          );
         } catch (e) {
           fail((e as Error).message);
         }
-        built = { ...container, scheme };
+        appPath = result.app;
+        built = { ...container, scheme, ...(result.skipped ? { skipped: true } : {}) };
       }
 
-      const appPath = prebuilt || simctl.findDerivedApp(bundle);
+      appPath ||= simctl.findDerivedApp(bundle);
       if (!appPath) fail(`No build artifact found for ${bundle} in DerivedData; pass --app <path>`);
 
       if (udid !== "booted") {
@@ -502,6 +513,7 @@ async function main() {
         dir: resolve.STATE_DIR,
         companions: resolve.readRegistry(),
         captures: simctl.listCaptures(),
+        builds: builds.readCache(),
         invocations: invocations.invocationsFile(),
       });
     }

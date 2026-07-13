@@ -63,14 +63,15 @@ learn the surface without parsing help text.
 
 | Command | Description |
 | --- | --- |
-| `run <bundle_id> [args...]` | build → install → terminate prior → launch → wait → capture logs. Auto-detects `.xcworkspace` / `.xcodeproj` + scheme; override with `--workspace`, `--project`, `--scheme`, `--configuration`, or pass `--app <path>` to launch a prebuilt artifact instead of building. Enabled `LaunchAction` env vars + command-line args from the matching `.xcscheme` are picked up automatically; pass extra/override env via `--env KEY=VAL` (repeatable). Detaches a verbose ndjson `log stream` to `~/.sim-cli/logs/<udid>.log` (truncated each run, all subsystems) and reports `{logs:{file,pid}}`. The next `run` replaces that streamer; inspect or find it with `logs` / `config`. |
+| `build` | build once for `generic/platform=iOS Simulator` and print the `.app` path, for installing across a pool via `run --app`. Skips `xcodebuild` entirely (`skipped: true`) when the git tree is unchanged since the last build of the same workspace/project + scheme + configuration and that `.app` still exists; `--force` rebuilds anyway. |
+| `run <bundle_id> [args...]` | build → install → terminate prior → launch → wait → capture logs. Auto-detects `.xcworkspace` / `.xcodeproj` + scheme; override with `--workspace`, `--project`, `--scheme`, `--configuration`, or pass `--app <path>` to launch a prebuilt artifact instead of building. Builds skip when the git tree is unchanged, like `build` (`built.skipped: true`, `--force` overrides). Enabled `LaunchAction` env vars + command-line args from the matching `.xcscheme` are picked up automatically; pass extra/override env via `--env KEY=VAL` (repeatable). Detaches a verbose ndjson `log stream` to `~/.sim-cli/logs/<udid>.log` (truncated each run, all subsystems) and reports `{logs:{file,pid}}`. The next `run` replaces that streamer; inspect or find it with `logs` / `config`. |
 | `openurl <url>` | open a URL / deep link |
 
 **State** — everything sim-cli persists lives under `~/.sim-cli/`.
 
 | Command | Description |
 | --- | --- |
-| `config` | dump `~/.sim-cli/`: the `dir` path, the companion registry (per-UDID idb companions, each with `alive`), `captures` (the log files `run` produced), and `invocations` (the invocation log). |
+| `config` | dump `~/.sim-cli/`: the `dir` path, the companion registry (per-UDID idb companions, each with `alive`), `captures` (the log files `run` produced), `builds` (the build cache behind the unchanged-tree skip), and `invocations` (the invocation log). |
 | `logs [--device <name\|udid>]` | list captured log files from prior runs — `udid`, `file`, `size`, `modified`, `capturing`, and live `pid`. Read a file directly with `tail`/`jq`. `--device` scopes to one sim. |
 | `defaults read\|write\|delete <domain> ...` | manage simulator defaults; `write` accepts `--type string\|bool\|int\|float` |
 | `pasteboard get\|set [value]` | read or replace the simulator pasteboard |

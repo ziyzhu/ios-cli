@@ -382,11 +382,9 @@ function buildArgs(opts: BuildOpts): string[] {
   return args;
 }
 
-export function resolveBuiltApp(opts: BuildOpts): string | undefined {
-  const r = spawnSync("xcodebuild", [...buildArgs(opts), "-showBuildSettings", "-json"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0) return undefined;
+function parseBuiltApp(stdout: string): string | undefined {
   try {
-    const targets = JSON.parse(r.stdout) as Array<{ buildSettings?: Record<string, string> }>;
+    const targets = JSON.parse(stdout) as Array<{ buildSettings?: Record<string, string> }>;
     for (const { buildSettings } of targets) {
       const wrapper = buildSettings?.WRAPPER_EXTENSION;
       const dir = buildSettings?.TARGET_BUILD_DIR;
@@ -395,6 +393,22 @@ export function resolveBuiltApp(opts: BuildOpts): string | undefined {
     }
   } catch { return undefined; }
   return undefined;
+}
+
+export function resolveBuiltApp(opts: BuildOpts): string | undefined {
+  const r = spawnSync("xcodebuild", [...buildArgs(opts), "-showBuildSettings", "-json"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) return undefined;
+  return parseBuiltApp(r.stdout);
+}
+
+export function resolveBuiltAppAsync(opts: BuildOpts): Promise<string | undefined> {
+  return new Promise((res) => {
+    const child = spawn("xcodebuild", [...buildArgs(opts), "-showBuildSettings", "-json"], { stdio: ["ignore", "pipe", "ignore"] });
+    const chunks: Buffer[] = [];
+    child.stdout!.on("data", (c) => chunks.push(c));
+    child.on("error", () => res(undefined));
+    child.on("exit", (code) => res(code === 0 ? parseBuiltApp(Buffer.concat(chunks).toString("utf8")) : undefined));
+  });
 }
 
 export async function build(opts: BuildOpts): Promise<void> {

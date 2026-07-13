@@ -71,7 +71,7 @@ Help is progressively disclosed across three layers — reach for the deepest on
 
 ### `run` flags
 
-`run` is the single app-lifecycle command and always runs the full order: **build → install → terminate prior → launch → wait-for-frontmost → capture logs.** The only way to skip the build is to hand it a prebuilt `.app` via `--app`.
+`run` is the single app-lifecycle command and always runs the full order: **build → install → terminate prior → launch → wait-for-frontmost → capture logs.** The build step short-circuits when the git tree is unchanged since the last build of the same target (reported as `built.skipped: true`); re-running after a failed launch or on a clean tree is therefore cheap. Pass `--force` to rebuild anyway, or `--app` with a prebuilt `.app` to skip building entirely.
 
 | Flag | Effect |
 | --- | --- |
@@ -81,6 +81,7 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | `--configuration Debug\|Release` | build configuration (default `Debug`) |
 | `--app <path>` | launch a prebuilt `.app` instead of building |
 | `--env KEY=VAL` | pass env to launched app, overrides scheme value (repeatable) |
+| `--force` | build even when the source tree is unchanged |
 
 Build errors are surfaced: on `xcodebuild` failure, the output lands in the `{"error": "..."}` payload.
 

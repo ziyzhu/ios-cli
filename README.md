@@ -108,6 +108,7 @@ through the target device's launchd, never by process name.
 | `wait --label\|--role\|--text\|--id <s> [--timeout ms] [--stable ms] [--missing]` | wait for a visible match, stable frame, or disappearance |
 | `tap <x> <y> [--duration s]` | tap at coordinates; or use a selector with `--wait`, `--stable`, and `--settle` to wait for a stable, hit-testable match |
 | `swipe <x1> <y1> <x2> <y2> [--duration s] [--delta n]` | swipe between points, or use `--direction up\|down\|left\|right` with optional `--edge`, `--distance`, and an AX selector |
+| `drag <x1> <y1> <x2> <y2> [x y ...]` | one continuous touch: press (`--press s` to lift for drag & drop), move through every waypoint (`--duration s` per segment), optionally pause (`--hold s`), release at the last pair; start from an AX selector instead of the first pair |
 | `type "<string>"` | send keystrokes to focused field |
 | `fill --label\|--role\|--text\|--id <s> "<value>" [--replace] [--wait ms] [--settle ms]` | tap a field, wait for focus, then append or replace its value |
 | `press <home\|lock\|siri\|side_button\|apple_pay> [--duration s]` | press a hardware button |

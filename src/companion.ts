@@ -82,6 +82,35 @@ export async function swipe(
   ]);
 }
 
+export type DragOpts = { press?: number; duration?: number; hold?: number; delta?: number };
+
+export function dragEvents(points: Pt[], opts: DragOpts = {}): any[] {
+  if (points.length < 2) throw new Error("drag requires at least two points");
+  const delta = opts.delta && opts.delta > 0 ? opts.delta : 10;
+  const duration = opts.duration ?? 0.25;
+  const evs: any[] = [pressTouch(points[0]!, DOWN)];
+  if (opts.press && opts.press > 0) evs.push(delay(opts.press));
+  for (let s = 1; s < points.length; s++) {
+    const from = points[s - 1]!;
+    const to = points[s]!;
+    const steps = Math.max(1, Math.round(Math.hypot(to.x - from.x, to.y - from.y) / delta));
+    for (let i = 1; i <= steps; i++) {
+      if (duration > 0) evs.push(delay(duration / steps));
+      evs.push(pressTouch({
+        x: from.x + ((to.x - from.x) * i) / steps,
+        y: from.y + ((to.y - from.y) * i) / steps,
+      }, DOWN));
+    }
+  }
+  if (opts.hold && opts.hold > 0) evs.push(delay(opts.hold));
+  evs.push(pressTouch(points[points.length - 1]!, UP));
+  return evs;
+}
+
+export async function drag(client: any, points: Pt[], opts?: DragOpts) {
+  await streamHid(client, dragEvents(points, opts));
+}
+
 export async function text(client: any, str: string) {
   const evs = textToKeyEvents(str).map((k) =>
     pressKey(k.keycode, k.down ? DOWN : UP),

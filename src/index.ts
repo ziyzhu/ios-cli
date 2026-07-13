@@ -603,6 +603,45 @@ async function main() {
       await withClient((c) => companion.swipe(c, { x: x1, y: y1 }, { x: x2, y: y2 }, duration, delta));
       ok({ ok: true, start: { x: x1, y: y1 }, end: { x: x2, y: y2 } });
     }
+    case "drag": {
+      const q = queryFromFlags(flags);
+      if (pos.length % 2 !== 0) fail("drag requires x y coordinate pairs");
+      const points: { x: number; y: number }[] = [];
+      for (let i = 0; i < pos.length; i += 2) {
+        points.push({ x: num(pos[i], `x${i / 2 + 1}`), y: num(pos[i + 1], `y${i / 2 + 1}`) });
+      }
+      const opts = {
+        press: flags.press ? Number(flags.press) : undefined,
+        duration: flags.duration ? Number(flags.duration) : undefined,
+        hold: flags.hold ? Number(flags.hold) : undefined,
+        delta: flags.delta ? Number(flags.delta) : undefined,
+      };
+      const settle = flags.settle ? Number(flags.settle) : 0;
+      if (hasQuery(q)) {
+        if (points.length < 1) fail("drag with a matcher requires at least one destination x y pair");
+        const wait = flags.wait ? Number(flags.wait) : 0;
+        const stable = flags.stable ? Number(flags.stable) : 0;
+        const result = await withClient(async (c) => {
+          const m = await pollMatch(c, q, wait > 0 ? wait : Math.max(1000, stable + 500), {
+            stableMs: stable,
+            hittable: true,
+          });
+          if (!m) return undefined;
+          const start = { x: m.x + m.w / 2, y: m.y + m.h / 2 };
+          await companion.drag(c, [start, ...points], opts);
+          if (settle > 0) await new Promise((r) => setTimeout(r, settle));
+          return { start, match: m };
+        });
+        if (!result) fail(wait > 0 ? `No element matched after ${wait}ms` : `No element matched`);
+        ok({ ok: true, points: [result.start, ...points], match: result.match });
+      }
+      if (points.length < 2) fail("drag requires at least two x y pairs (or a matcher for the start)");
+      await withClient(async (c) => {
+        await companion.drag(c, points, opts);
+        if (settle > 0) await new Promise((r) => setTimeout(r, settle));
+      });
+      ok({ ok: true, points });
+    }
     case "type": {
       if (!pos[0]) fail("type requires a string");
       await withClient((c) => companion.text(c, pos.join(" ")));

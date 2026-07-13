@@ -61,7 +61,8 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | CPU profile (where time goes) | `sample <bundle_id> [--duration s]` — no attach pause |
 | Wait for UI | `wait --id <id> [--timeout ms] [--stable ms] [--missing]` |
 | Tap (coords or label) | `tap <x> <y>` or `tap --label "Settings" --wait 5000 --stable 200` |
-| Swipe | `swipe --direction up\|down\|left\|right [--edge left\|right\|top\|bottom] [--distance 0.55]`, or explicit coordinates |
+| Swipe (atomic flick) | `swipe --direction up\|down\|left\|right [--edge left\|right\|top\|bottom] [--distance 0.55]`, or explicit coordinates |
+| Drag / drag & drop / release midway | `drag <x1> <y1> <x2> <y2> [x y ...]` — one continuous touch; `--press 0.5` lifts for reorder, `--hold` pauses before release, waypoints allowed, or start from `--label`/`--id` |
 | Type | `type "hello"` |
 | Fill a field | `fill --label "Email" "user@example.com" [--replace]` |
 | Read/write defaults | `defaults read\|write\|delete <domain> ...` |

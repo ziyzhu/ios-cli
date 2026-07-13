@@ -129,9 +129,4 @@ describe("invocation log", () => {
     expect(JSON.stringify(record)).not.toContain("hunter2");
   });
 
-  test("writes nothing when SIM_NO_LOG is set", () => {
-    const home = sandbox();
-    run(home, ["devices", "shutdown"], { SIM_NO_LOG: "1" });
-    expect(records(home)).toEqual([]);
-  });
 });

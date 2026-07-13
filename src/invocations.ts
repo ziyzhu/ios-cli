@@ -54,7 +54,6 @@ let output: Shape | undefined;
 let error: string | undefined;
 
 export function begin(argv: string[]) {
-  if (process.env.SIM_NO_LOG) return;
   pending = { at: Date.now(), argv: redact(argv) };
   process.on("exit", flush);
   process.on("SIGINT", () => process.exit(130));

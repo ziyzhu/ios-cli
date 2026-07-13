@@ -142,7 +142,7 @@ memory_pressure | tail -3 && sysctl -n vm.swapusage
   ```
 - A SpringBoard crash (black screen, home screen relaunching) is the sim's own system UI, not your app — nearly always host memory pressure, since each booted sim runs ~200+ processes. Check `sysctl -n vm.swapusage` first: swap near full means the kernel is jetsamming, and no amount of app debugging will fix it. Shut down the sims you aren't using (`sim devices shutdown <name>...`), then reboot the sick one; only `xcrun simctl erase <udid>` (wipes its apps, keychain, settings) if it survives that.
 - `logs` and `config` only read `~/.sim-cli/` state — they never touch the simulator, so they're safe to call anytime (no companion needed).
-- Every `sim` invocation appends a line to `~/.sim-cli/logs/invocations.jsonl` — `{ts,ms,cmd,argv,cwd,pid,exit}` plus `output` (the field/type shape of the payload, not its content) or `error`. Use it to retrace what a prior session ran and what failed. `--env` values are redacted; `SIM_NO_LOG=1` disables it.
+- Every `sim` invocation appends a line to `~/.sim-cli/logs/invocations.jsonl` — `{ts,ms,cmd,argv,cwd,pid,exit}` plus `output` (the field/type shape of the payload, not its content) or `error`. Use it to retrace what a prior session ran and what failed. `--env` values are redacted.
 
 ## Parsing output
 

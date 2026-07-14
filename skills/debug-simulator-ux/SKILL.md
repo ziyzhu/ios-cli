@@ -38,6 +38,19 @@ Logs can prove state correctness. They cannot, by themselves, prove that motion 
 
 Do not implement a fix when the user only asked for diagnosis. If a fix is requested, preserve the same reproduction so the before/after comparison remains valid.
 
+## Compare static variants
+
+Use a screenshot matrix when several stable states need side-by-side review.
+
+1. Capture each state at the same device size, orientation, appearance, and settling point.
+2. Give screenshots zero-padded names in the intended reading order.
+3. Build a contact sheet with the bundled script:
+   ```
+   scripts/make-screenshot-matrix.sh /tmp/matrix.png 4 /tmp/state-01.png /tmp/state-02.png /tmp/state-03.png /tmp/state-04.png
+   ```
+4. Inspect the matrix for alignment, hierarchy, relative spacing, and variant consistency.
+5. Inspect the full-size originals and accessibility geometry before judging fine text, enabled state, clipping, or hit targets. A downsampled matrix is an overview, not primary evidence for those details.
+
 ## Capture motion
 
 Stage the app before recording. Keep a take focused on one interaction and normally between two and six seconds.

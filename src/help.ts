@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = "1";
+export const SCHEMA_VERSION = "2";
 
 export const ENUMS = {
   appearance: ["light", "dark"],
@@ -7,6 +7,7 @@ export const ENUMS = {
   defaultsType: ["bool", "string", "int", "float"],
   direction: ["up", "down", "left", "right"],
   edge: ["left", "right", "top", "bottom"],
+  platform: ["simulator", "device"],
   privacyAction: ["grant", "revoke", "reset"],
   privacyService: [
     "contacts", "contacts-limited", "calendar", "location", "location-always",
@@ -51,18 +52,18 @@ interface Command {
 }
 
 export const GLOBALS: Flag[] = [
-  { name: "device", type: "string", metavar: "name|udid|booted", default: "booted", desc: "target simulator by name or UDID (env SIM_DEVICE; --udid/IDB_UDID also accepted). With multiple booted sims you must pass --device." },
+  { name: "device", type: "string", metavar: "name|udid|booted", default: "booted", desc: "target a simulator or paired physical iOS device by name or UDID (env SIM_DEVICE; --udid/IDB_UDID also accepted). The default `booted` selects a simulator." },
   { name: "companion", type: "string", metavar: "host:port|unix:/sock", desc: "pin a companion endpoint, bypassing autoresolve (env IDB_COMPANION)" },
   { name: "verbose", type: "bool", desc: "log companion resolution to stderr (-v)" },
 ];
 
 export const COMMANDS: Command[] = [
   {
-    name: "devices", group: "DEVICE", summary: "list simulators / manage device names",
+    name: "devices", group: "DEVICE", summary: "list simulators and physical devices / manage simulators",
     aliases: ["list-devices"],
     usage: "devices [rename|clone|boot|shutdown] ...",
     subcommands: [
-      { name: "list", summary: "list all simulators (default when no subcommand)" },
+      { name: "list", summary: "list all simulators and paired physical iOS devices (default)" },
       { name: "rename", args: [
         { name: "device", required: true, desc: "name, UDID, or booted" },
         { name: "new_name", required: true, desc: "new device name, usable with --device" },
@@ -140,19 +141,20 @@ export const COMMANDS: Command[] = [
   },
 
   {
-    name: "build", group: "APP", summary: "build for the generic simulator destination; print the .app path",
+    name: "build", group: "APP", summary: "build for a simulator or physical-device destination; print the .app path",
     flags: [
       { name: "workspace", type: "string", metavar: "path", desc: "Xcode workspace (auto-detected in CWD)" },
       { name: "project", type: "string", metavar: "path", desc: "Xcode project (auto-detected in CWD)" },
       { name: "scheme", type: "string", metavar: "name", desc: "build scheme (auto-detected if only one)" },
       { name: "configuration", type: "string", enum: ENUMS.configuration, default: "Debug", desc: "build configuration" },
+      { name: "platform", type: "string", enum: ENUMS.platform, default: "simulator", desc: "generic build platform; an explicit physical --device selects device automatically" },
       { name: "derived-data", type: "string", metavar: "path", desc: "-derivedDataPath for a self-contained build product" },
       { name: "force", type: "bool", desc: "build even when the source tree is unchanged" },
     ],
-    notes: "Build-only, no device needed: builds once for `generic/platform=iOS Simulator` and prints the resolved `.app` so it can be installed across a pool via `run --app <path>`. Prefer this over invoking `xcodebuild` directly. When the git tree (HEAD + dirty files) is unchanged since the last build of the same workspace/project + scheme + configuration and that `.app` still exists, xcodebuild is skipped entirely and the result carries `skipped: true`; `--force` overrides.",
+    notes: "Build-only: defaults to `generic/platform=iOS Simulator`. Use `--platform device` for a generic signed iphoneos build, or `--device <physical name|udid>` for that phone's destination. The cache separates simulator, generic-device, and device-specific artifacts. When the git tree is unchanged and the matching `.app` still exists, xcodebuild is skipped (`skipped: true`); `--force` overrides.",
   },
   {
-    name: "run", group: "APP", summary: "build -> install -> terminate prior -> launch -> wait -> capture logs",
+    name: "run", group: "APP", summary: "build -> install -> terminate prior -> launch -> wait; Simulator logs",
     args: [
       { name: "bundle_id", required: true, desc: "app to launch" },
       { name: "args", variadic: true, desc: "extra launch arguments, appended after scheme args" },
@@ -166,7 +168,7 @@ export const COMMANDS: Command[] = [
       { name: "env", type: "string", metavar: "KEY=VAL", repeatable: true, desc: "app env var, overrides scheme value" },
       { name: "force", type: "bool", desc: "build even when the source tree is unchanged" },
     ],
-    notes: "Skips the build when the git tree is unchanged since the last build of the same target (`built.skipped: true`; `--force` overrides). Device logs stream to ~/.sim-cli/logs/<udid>.log (verbose ndjson, truncated each run). See `logs` / `config`.",
+    notes: "The selected target determines the build: iphonesimulator + simctl for simulators, signed iphoneos + devicectl for physical devices. Physical devices must be paired, available, in Developer Mode, and provisioned. Simulator runs capture logs under ~/.sim-cli/logs; physical log capture is not yet supported. Build caching is target-aware (`built.skipped: true`; `--force` overrides).",
   },
   {
     name: "openurl", group: "APP", summary: "open a URL / deep link",
@@ -458,7 +460,7 @@ function renderFlagLine(f: Flag, indent: string): string {
 
 export function overview(): string {
   const lines = [
-    "sim — agent-friendly iOS simulator CLI",
+    "sim — agent-friendly iOS target CLI",
     "",
     "USAGE",
     "  sim [globals] <command> [args] [flags]",
@@ -520,7 +522,7 @@ export function agentContext() {
   return {
     schema_version: SCHEMA_VERSION,
     cli: "sim",
-    description: "agent-friendly iOS simulator CLI; JSON to stdout on success, {\"error\":...} to stderr on failure",
+    description: "agent-friendly iOS simulator and physical-device CLI; JSON to stdout on success, {\"error\":...} to stderr on failure",
     globals: GLOBALS.map(flagContext),
     commands: Object.fromEntries(COMMANDS.map((c) => [c.name, commandContext(c)])),
   };

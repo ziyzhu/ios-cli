@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { STATE_DIR } from "./resolve.ts";
-import * as simctl from "./simctl.ts";
+import * as xcode from "./xcode.ts";
 
 const CACHE_PATH = join(STATE_DIR, "builds.json");
 
@@ -50,18 +50,20 @@ export function treeFingerprint(dir: string): string | undefined {
   return createHash("sha256").update(JSON.stringify([head, entries])).digest("hex");
 }
 
-function cacheKey(opts: simctl.BuildOpts): string {
+export function cacheKey(opts: xcode.BuildOpts): string {
   return [
     resolvePath(opts.workspace ?? opts.project!),
     opts.scheme,
     opts.configuration ?? "Debug",
     opts.derivedData ? resolvePath(opts.derivedData) : "",
+    opts.platform ?? "simulator",
+    opts.destinationUdid ?? "",
   ].join("\n");
 }
 
 export type EnsureResult = { app?: string; skipped: boolean };
 
-export async function ensureBuilt(opts: simctl.BuildOpts, force = false): Promise<EnsureResult> {
+export async function ensureBuilt(opts: xcode.BuildOpts, force = false): Promise<EnsureResult> {
   const key = cacheKey(opts);
   const dir = dirname(resolvePath(opts.workspace ?? opts.project!));
   const fingerprint = treeFingerprint(dir);
@@ -69,9 +71,9 @@ export async function ensureBuilt(opts: simctl.BuildOpts, force = false): Promis
   if (!force && fingerprint && entry?.fingerprint === fingerprint && existsSync(entry.app)) {
     return { app: entry.app, skipped: true };
   }
-  const pendingApp = simctl.resolveBuiltAppAsync(opts);
-  await simctl.build(opts);
-  const app = (await pendingApp) ?? simctl.resolveBuiltApp(opts);
+  const pendingApp = xcode.resolveBuiltAppAsync(opts);
+  await xcode.build(opts);
+  const app = (await pendingApp) ?? xcode.resolveBuiltApp(opts);
   if (app && fingerprint) {
     const cache = readCache();
     cache[key] = { app, fingerprint, builtAt: new Date().toISOString() };

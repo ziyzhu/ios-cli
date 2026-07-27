@@ -1,13 +1,14 @@
 # sim-cli
 
-Agent-friendly iOS simulator CLI. Thin wrapper around `simctl` and an idb
-companion gRPC endpoint, with JSON in / JSON out for easy scripting.
+Agent-friendly iOS target CLI. It drives simulators through `simctl`, physical
+devices through `devicectl`, and UI automation through an idb companion gRPC
+endpoint, with JSON in / JSON out for easy scripting.
 
 ## Requirements
 
-- macOS with Xcode + `xcrun simctl`
+- macOS with Xcode + `xcrun simctl` + `xcrun devicectl`
 - [Bun](https://bun.sh)
-- An `idb_companion` running against your simulator (default: `localhost:10882`)
+- An `idb_companion` for UI automation; the CLI starts one per target when needed
 - Optional: [`xcpretty`](https://github.com/xcpretty/xcpretty) — `run` pipes
   `xcodebuild` output through it when available
 
@@ -30,11 +31,31 @@ bun run src/index.ts --help
 sim [--device <name|udid|booted>] [--companion <host:port>] <command> [args]
 ```
 
-Defaults: `--device booted`, `--companion localhost:10882`. Overridable via
-`SIM_DEVICE` / `IDB_COMPANION` env vars (`--udid` / `IDB_UDID` still accepted).
-`--device` takes a simulator name (e.g. `mango-qa`, set via `devices rename`),
-a UDID, or `booted`; names resolve case-insensitively, preferring a booted
-match when several runtimes share the name.
+The default target is `--device booted`; companion endpoints are auto-resolved
+and started per target. Override through `SIM_DEVICE` / `IDB_COMPANION`
+(`--udid` / `IDB_UDID` remain accepted).
+`--device` takes a simulator or paired physical iOS device name, a UDID, or
+`booted`; names resolve case-insensitively. The default `booted` selects a
+simulator. Ambiguous names require a UDID.
+
+### Physical devices
+
+Pair and trust the phone with Xcode, enable Developer Mode, and configure the
+app target's signing team. `sim devices` reports paired phones under
+`physicalDevices`, including availability, connection, Developer Mode, model,
+and OS version.
+
+| Capability | Physical device support |
+| --- | --- |
+| Discover, list apps, uninstall | `devicectl` |
+| Build, install, launch, pass args/env | signed `iphoneos` build + `devicectl` |
+| Screenshot, accessibility, tap/swipe/type | idb when its companion can resolve the phone |
+| Simulator state and host-process diagnostics | unavailable with an explicit capability error |
+
+Current Apple CLI tooling does not expose general screen input or accessibility
+automation through `devicectl`. Physical UI commands therefore require a
+compatible idb companion; lifecycle commands remain available when idb cannot
+resolve a CoreDevice target.
 
 Help is progressively disclosed: `sim --help` prints a grouped command
 overview; `sim help <command>` (or `sim <command> --help`) discloses the
@@ -49,7 +70,7 @@ learn the surface without parsing help text.
 
 | Command | Description |
 | --- | --- |
-| `devices` | list all simulators (alias: `list-devices`) |
+| `devices` | list all simulators and paired physical iOS devices (alias: `list-devices`) |
 | `devices rename <device> <new_name>` | rename a simulator; the name then works anywhere `--device` is accepted |
 | `devices clone <source> <new_name>` | clone a simulator by name or UDID |
 | `devices boot <device>` | boot a simulator and wait until it is ready |
@@ -63,8 +84,8 @@ learn the surface without parsing help text.
 
 | Command | Description |
 | --- | --- |
-| `build` | build once for `generic/platform=iOS Simulator` and print the `.app` path, for installing across a pool via `run --app`. Skips `xcodebuild` entirely (`skipped: true`) when the git tree is unchanged since the last build of the same workspace/project + scheme + configuration and that `.app` still exists; `--force` rebuilds anyway. |
-| `run <bundle_id> [args...]` | build → install → terminate prior → launch → wait → capture logs. Auto-detects `.xcworkspace` / `.xcodeproj` + scheme; override with `--workspace`, `--project`, `--scheme`, `--configuration`, or pass `--app <path>` to launch a prebuilt artifact instead of building. Builds skip when the git tree is unchanged, like `build` (`built.skipped: true`, `--force` overrides). Enabled `LaunchAction` env vars + command-line args from the matching `.xcscheme` are picked up automatically; pass extra/override env via `--env KEY=VAL` (repeatable). Detaches a verbose ndjson `log stream` to `~/.sim-cli/logs/<udid>.log` (truncated each run, all subsystems) and reports `{logs:{file,pid}}`. The next `run` replaces that streamer; inspect or find it with `logs` / `config`. |
+| `build` | build for `generic/platform=iOS Simulator` by default; use `--platform device` for a generic signed build or `--device <physical>` for a device-specific destination. The build cache separates every platform/destination. |
+| `run <bundle_id> [args...]` | build → install → terminate prior → launch → wait. Uses `simctl` for simulators and `devicectl` for physical devices. Auto-detects the Xcode container and scheme; accepts `--app`, `--env`, and launch args. Simulator runs additionally capture verbose logs under `~/.sim-cli/logs`. |
 | `openurl <url>` | open a URL / deep link |
 
 **State** — everything sim-cli persists lives under `~/.sim-cli/`.
@@ -72,7 +93,7 @@ learn the surface without parsing help text.
 | Command | Description |
 | --- | --- |
 | `config` | dump `~/.sim-cli/`: the `dir` path, the companion registry (per-UDID idb companions, each with `alive`), `captures` (the log files `run` produced), `builds` (the build cache behind the unchanged-tree skip), and `invocations` (the invocation log). |
-| `logs [--device <name\|udid>]` | list captured log files from prior runs — `udid`, `file`, `size`, `modified`, `capturing`, and live `pid`. Read a file directly with `tail`/`jq`. `--device` scopes to one sim. |
+| `logs [--device <name\|udid>]` | list Simulator log files from prior runs — `udid`, `file`, `size`, `modified`, `capturing`, and live `pid`. Physical-device log capture is not yet available. |
 | `defaults read\|write\|delete <domain> ...` | manage simulator defaults; `write` accepts `--type string\|bool\|int\|float` |
 | `pasteboard get\|set [value]` | read or replace the simulator pasteboard |
 
@@ -93,6 +114,9 @@ jq -c 'select(.exit != 0) | {ts, cmd, error}' ~/.sim-cli/logs/invocations.jsonl
 read it directly (no Xcode). All take the app by bundle id and resolve the pid
 through the target device's launchd, never by process name.
 
+These commands are Simulator-only and return an explicit capability error for
+physical targets.
+
 | Command | Description |
 | --- | --- |
 | `stats <bundle_id> [--watch]` | resource gauges via `proc_pid_rusage`: CPU %, memory footprint (current + lifetime peak), disk I/O. One-shot adds net bytes for open sockets and the data container's size on disk; `--watch` emits one NDJSON line per second until the process exits. App process only — WKWebView helper processes are separate pids and excluded. |
@@ -103,6 +127,10 @@ through the target device's launchd, never by process name.
 | `sample <bundle_id> [--duration s] [--out file.txt]` | CPU profile: 1ms call-stack sampling, no attach pause. Top-of-stack summary inline, full call tree to file. |
 
 **Interact**
+
+Simulator interaction works through idb. Physical interaction uses the same
+surface when the installed idb companion can resolve the phone; otherwise the
+command reports the UI-bridge limitation without affecting lifecycle support.
 
 | Command | Description |
 | --- | --- |

@@ -1,30 +1,30 @@
 ---
 name: sim-cli
-description: Drive a booted iOS Simulator with the `sim` executable — build/install/launch apps, read accessibility trees, tap/swipe/type, capture screenshots and logs. Use when the user asks to interact with a simulator, automate iOS UI, run a built app, debug a UI flow, or grab a screenshot/AX dump from the iPhone Simulator.
+description: Drive iOS simulators and paired physical devices with the `sim` executable — build/install/launch apps, read accessibility trees, tap/swipe/type, capture screenshots, and inspect simulator diagnostics. Use when the user asks to interact with an iOS target, automate iOS UI, run a built app, debug a UI flow, or grab a screenshot/AX dump.
 ---
 
 # sim-cli
 
-Thin agent-friendly wrapper around `xcrun simctl`, `xcodebuild`, and `idb_companion`. Every command writes a single JSON object to stdout on success and `{"error": "..."}` to stderr (exit 1) on failure.
+Thin agent-friendly wrapper around `xcrun simctl`, `xcrun devicectl`, `xcodebuild`, and `idb_companion`. Every command writes a single JSON object to stdout on success and `{"error": "..."}` to stderr (exit 1) on failure.
 
 ## Prerequisites
 
 Before issuing any command, verify the environment:
 
-1. A simulator is booted: `sim devices`. If none, ask the user which device to boot or run `sim devices boot <device>`.
-2. `idb_companion` is running for that UDID: `pgrep -fl idb_companion`. If missing for the target sim, start one:
+1. Inspect targets with `sim devices`. For a simulator task, ensure the selected simulator is booted. For a physical-device task, ensure the phone is paired, available, trusted, in Developer Mode, and provisioned for the app.
+2. UI commands need an `idb_companion` that can resolve the target UDID. The CLI auto-starts one when possible. For manual Simulator startup:
    ```
    idb_companion --udid <UDID> --grpc-domain-sock /tmp/idb/<UDID>_companion.sock --only simulator &
    ```
    The CLI auto-discovers `/tmp/idb/<UDID>_companion.sock` when present, so you usually don't need `--companion`.
-3. If multiple sims are booted, never rely on the `booted` default — pass `--device <name|udid>` (or `export SIM_DEVICE=<name|udid>`).
+3. If multiple simulators are booted, never rely on the `booted` default — pass `--device <name|udid>` (or `export SIM_DEVICE=<name|udid>`). Always select physical devices explicitly.
 4. Optional but recommended: `xcpretty` on PATH (`gem install xcpretty`). `run` pipes `xcodebuild` through it for cleaner build output; falls back to raw output otherwise.
 
 ## Invocation
 
 From the repo root: `bun run src/index.ts <cmd>` during development, or `./dist/sim <cmd>` after `bun run build`. Globals can be in any position:
 
-- `--device <name|udid|booted>` (or `SIM_DEVICE`; legacy `--udid`/`IDB_UDID` also accepted) — names come from `devices rename`, resolve case-insensitively, and prefer a booted match when several runtimes share the name
+- `--device <name|udid|booted>` (or `SIM_DEVICE`; legacy `--udid`/`IDB_UDID` also accepted) — selects a simulator or paired physical iOS device; `booted` means Simulator
 - `--companion <host:port|/path/to.sock>` (or `IDB_COMPANION`)
 
 Help is progressively disclosed across three layers — reach for the deepest one you need rather than memorizing the table below:
@@ -37,7 +37,7 @@ Help is progressively disclosed across three layers — reach for the deepest on
 
 | Goal | Command |
 | --- | --- |
-| Inventory devices | `devices` (alias: `list-devices`) |
+| Inventory targets | `devices` (alias: `list-devices`) — physical phones appear under `physicalDevices` |
 | Name a device | `devices rename <device> <new_name>` — the name then works with `--device` |
 | Clone a device | `devices clone <source> <new_name>` |
 | Boot and wait | `devices boot <device>` |
@@ -46,7 +46,7 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | Remove app | `uninstall <bundle_id>` |
 | Control keyboard | `keyboard status\|connect\|disconnect` (`enable`/`disable` aliases); toggles the device's live hardware keyboard via the Simulator I/O menu. `disconnect` shows the software keyboard like a real device (needs an open Simulator window + Accessibility permission); state persists |
 | Read/write a container file | `file list\|pull\|push\|delete\|mkdir\|mv <bundle_id> ...` (`ls`/`rm` aliases accepted; `--container app\|data`, `--dest <dir>` for `file pull`) |
-| Build, install, launch | `run <bundle_id> [args...]` (see flags below) |
+| Build, install, launch | `run <bundle_id> [args...]` (see flags below); target selects simctl or devicectl lifecycle |
 | Launch a prebuilt artifact | `run <bundle_id> --app <path>` |
 | Open a deep link / URL | `openurl <url>` |
 | Inspect `~/.sim-cli/` state | `config` → dir, companion registry, captured log files, invocation log |
@@ -71,7 +71,7 @@ Help is progressively disclosed across three layers — reach for the deepest on
 
 ### `run` flags
 
-`run` is the single app-lifecycle command and always runs the full order: **build → install → terminate prior → launch → wait-for-frontmost → capture logs.** The build step short-circuits when the git tree is unchanged since the last build of the same target (reported as `built.skipped: true`); re-running after a failed launch or on a clean tree is therefore cheap. Pass `--force` to rebuild anyway, or `--app` with a prebuilt `.app` to skip building entirely.
+`run` is the single app-lifecycle command and runs **build → install → terminate prior → launch → wait-for-frontmost**. Simulator runs then capture logs; physical-device log capture is not yet supported. The target selects an `iphonesimulator` + `simctl` lifecycle or a signed `iphoneos` + `devicectl` lifecycle. The build step short-circuits when the git tree is unchanged since the last build of the same platform and destination (reported as `built.skipped: true`). Pass `--force` to rebuild anyway, or `--app` with a compatible prebuilt `.app` to skip building entirely.
 
 | Flag | Effect |
 | --- | --- |
@@ -95,6 +95,14 @@ sim describe
 sim logs                                      # find the capture file run just started
 tail -f "$(sim logs | jq -r '.[0].file')" | jq -c 'select(.subsystem=="com.acme.MyApp")'
 ```
+
+**Run on a paired physical device**
+```
+sim devices | jq '.physicalDevices'
+sim run com.acme.MyApp --device "My iPhone"
+sim list-apps --device "My iPhone"
+```
+The phone must be available, trusted, in Developer Mode, and covered by the app's signing configuration. Build/install/launch use `devicectl` and do not depend on idb.
 
 **Skip the build for a fast inner loop** — when you already have an artifact:
 ```
@@ -130,6 +138,8 @@ memory_pressure | tail -3 && sysctl -n vm.swapusage
 ## Gotchas
 
 - `tap`, `swipe`, `type`, `press`, `describe` go through `idb_companion`. If they hang or return `UNAVAILABLE`, the companion for that UDID isn't running — start it (see prerequisites).
+- Physical UI commands also go through idb. Apple's `devicectl` does not expose general accessibility or input automation; if the installed idb companion cannot resolve a CoreDevice phone, `sim` reports that limitation while build/install/launch/list-apps remain available.
+- Simulator state and host-process commands return an explicit Simulator-only error for physical targets.
 - The `booted` default errors out when more than one sim is booted. Prefer an explicit `--device <name|udid>` in multi-sim setups.
 - `run` waits for the app to register with launchd before returning (`ready: true/false`). If `ready` is false, the launch raced — re-launch.
 - `run` invokes `xcodebuild` every time unless you pass `--app <path>`. Build once, then `--app` for a fast inner loop.

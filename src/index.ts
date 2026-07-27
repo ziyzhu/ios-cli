@@ -10,6 +10,9 @@ import * as resolve from "./resolve.ts";
 import * as window from "./window.ts";
 import * as invocations from "./invocations.ts";
 import * as builds from "./build.ts";
+import * as devicectl from "./devicectl.ts";
+import * as targets from "./target.ts";
+import * as xcode from "./xcode.ts";
 import { overview, commandHelp, agentContext, resolveSubcommand, resolveCommand, enumError, ENUMS } from "./help.ts";
 
 type Flags = Record<string, string | boolean | string[]>;
@@ -126,13 +129,28 @@ async function main() {
   if (cmd === "build") {
     const container = (flags.workspace || flags.project)
       ? { workspace: flags.workspace as string | undefined, project: flags.project as string | undefined }
-      : simctl.detectXcodeProject();
+      : xcode.detectXcodeProject();
     if (!container.workspace && !container.project) fail("No .xcworkspace/.xcodeproj found in CWD; pass --workspace or --project");
-    const scheme = (flags.scheme as string | undefined) ?? simctl.detectScheme(container);
+    const scheme = (flags.scheme as string | undefined) ?? xcode.detectScheme(container);
     if (!scheme) fail("Could not auto-detect scheme; pass --scheme <name>");
     const configuration = (flags.configuration as string | undefined) ?? "Debug";
     const derivedData = flags["derived-data"] as string | undefined;
-    const opts = { ...container, scheme, configuration, derivedData };
+    const explicit = (flags.device as string) || (flags.udid as string) || process.env.SIM_DEVICE || process.env.IDB_UDID;
+    let selected: targets.Target | undefined;
+    if (explicit) {
+      try { selected = targets.resolveTargetSpec(explicit); }
+      catch (e) { fail((e as Error).message); }
+    }
+    const requestedPlatform = flags.platform as string | undefined;
+    if (requestedPlatform && requestedPlatform !== "simulator" && requestedPlatform !== "device") {
+      fail(enumError("build platform", requestedPlatform, ENUMS.platform));
+    }
+    const platform = (requestedPlatform ?? (selected?.kind === "physical" ? "device" : "simulator")) as xcode.BuildPlatform;
+    if (selected && (selected.kind === "physical") !== (platform === "device")) {
+      fail(`--platform ${platform} conflicts with --device ${explicit}`);
+    }
+    const destinationUdid = selected?.kind === "physical" ? selected.udid : undefined;
+    const opts = { ...container, scheme, configuration, derivedData, platform, destinationUdid };
     let result: builds.EnsureResult;
     try { result = await builds.ensureBuilt(opts, !!flags.force); }
     catch (e) { fail((e as Error).message); }
@@ -140,15 +158,16 @@ async function main() {
     ok({
       app: result.app,
       ...(result.skipped ? { skipped: true } : {}),
-      built: { ...container, scheme, configuration, ...(derivedData ? { derivedData } : {}) },
+      built: { ...container, scheme, configuration, platform, ...(destinationUdid ? { destinationUdid } : {}), ...(derivedData ? { derivedData } : {}) },
     });
   }
   const explicitDevice = (flags.device as string) || (flags.udid as string)
     || process.env.SIM_DEVICE || process.env.IDB_UDID;
   const deviceSpec = explicitDevice || "booted";
-  let udid: string;
-  try { udid = simctl.resolveDeviceSpec(deviceSpec); }
+  let selectedTarget: targets.Target;
+  try { selectedTarget = targets.resolveTargetSpec(deviceSpec); }
   catch (e) { fail((e as Error).message); }
+  const udid = selectedTarget.udid;
   if (explicitDevice && cmd !== "daemon") announceDevice(explicitDevice);
   const explicitCompanion = (flags.companion as string) || process.env.IDB_COMPANION;
   const verbose = !!flags.verbose;
@@ -166,23 +185,47 @@ async function main() {
   };
 
   const withClient = async <T>(fn: (c: any) => Promise<T>): Promise<T> => {
-    const target = await getTarget();
-    const c = companion.makeClient(target);
-    try { return await fn(c); }
-    finally { c.close?.(); }
+    let c: any;
+    try {
+      const endpoint = await getTarget();
+      c = companion.makeClient(endpoint);
+      return await fn(c);
+    } catch (e) {
+      if (selectedTarget.kind === "physical") {
+        throw new Error(`physical-device UI bridge unavailable for ${selectedTarget.name}: ${(e as Error).message}; lifecycle commands still work through devicectl, while UI commands require an idb_companion that can resolve the phone`);
+      }
+      throw e;
+    } finally {
+      c?.close?.();
+    }
+  };
+
+  const requireSimulator = (feature: string = cmd): string => {
+    if (selectedTarget.kind === "physical") fail(`${feature} is only supported on simulators`);
+    return selectedTarget.udid;
   };
 
   const resolveAppPid = (bundle: string): { udid: string; pid: number } => {
-    const target = udid === "booted" ? soleBootedUdid() : udid;
-    try { return { udid: target, pid: proc.resolvePid(target, bundle) }; }
+    const simulator = requireSimulator("process diagnostics");
+    const concrete = simulator === "booted" ? soleBootedUdid() : simulator;
+    try { return { udid: concrete, pid: proc.resolvePid(concrete, bundle) }; }
     catch (e) { fail((e as Error).message); }
+  };
+
+  const captureScreenshot = async (out: string): Promise<void> => {
+    if (selectedTarget.kind === "physical") {
+      const shot = await withClient((client) => companion.screenshot(client));
+      writeFileSync(out, shot.data);
+    } else {
+      simctl.screenshot(udid, out);
+    }
   };
 
   switch (cmd) {
     case "list-devices":
     case "devices": {
       const sub = pos[0] ? subcommandName("devices", pos[0]) : "list";
-      if (sub === "list") ok(simctl.listDevices());
+      if (sub === "list") ok(targets.listAll());
       if (sub === "rename") {
         if (!pos[1] || !pos[2]) fail("devices rename requires <device> <new_name>");
         try {
@@ -218,12 +261,20 @@ async function main() {
         } catch (e) { fail((e as Error).message); }
       }
     }
-    case "list-apps": ok(simctl.listApps(udid));
+    case "list-apps": {
+      try { ok(selectedTarget.kind === "physical" ? devicectl.listApps(selectedTarget) : simctl.listApps(udid)); }
+      catch (e) { fail((e as Error).message); }
+    }
     case "uninstall": {
       if (!pos[0]) fail("uninstall requires <bundle_id>");
-      simctl.uninstall(udid, pos[0]); ok({ ok: true });
+      try {
+        if (selectedTarget.kind === "physical") devicectl.uninstall(selectedTarget, pos[0]);
+        else simctl.uninstall(udid, pos[0]);
+        ok({ ok: true });
+      } catch (e) { fail((e as Error).message); }
     }
     case "file": {
+      requireSimulator();
       const sub = subcommandName("file", pos[0]);
       const bundle = pos[1];
       if (!bundle) fail(`file ${sub} requires <bundle_id>`);
@@ -255,6 +306,7 @@ async function main() {
       } catch (e) { fail((e as Error).message); }
     }
     case "privacy": {
+      requireSimulator();
       const action = pos[0];
       if (!action || !ENUMS.privacyAction.includes(action as any)) {
         fail(enumError("privacy action", action ?? "", ENUMS.privacyAction));
@@ -272,16 +324,19 @@ async function main() {
       catch (e) { fail((e as Error).message); }
     }
     case "appearance": {
+      requireSimulator();
       const mode = pos[0];
       if (mode !== "light" && mode !== "dark") fail(enumError("appearance", mode ?? "", ENUMS.appearance));
       try { simctl.setAppearance(udid, mode); ok({ ok: true, mode }); }
       catch (e) { fail((e as Error).message); }
     }
     case "clear-keychain": {
+      requireSimulator();
       try { simctl.clearKeychain(udid); ok({ ok: true }); }
       catch (e) { fail((e as Error).message); }
     }
     case "keychain": {
+      requireSimulator();
       const sub = subcommandName("keychain", pos[0]);
       try {
         if (sub === "reset") { simctl.clearKeychain(udid); ok({ ok: true }); }
@@ -291,6 +346,7 @@ async function main() {
       } catch (e) { fail((e as Error).message); }
     }
     case "keyboard": {
+      requireSimulator();
       const sub = pos[0] ? subcommandName("keyboard", pos[0]) : "status";
       const device = simctl.deviceName(udid === "booted" ? soleBootedUdid() : udid) ?? explicitDevice ?? "";
       try {
@@ -306,6 +362,7 @@ async function main() {
       } catch (e) { fail((e as Error).message); }
     }
     case "defaults": {
+      requireSimulator();
       const sub = subcommandName("defaults", pos[0]);
       const domain = pos[1];
       if (!domain) fail(`defaults ${sub} requires <domain>`);
@@ -325,6 +382,7 @@ async function main() {
       } catch (e) { fail((e as Error).message); }
     }
     case "pasteboard": {
+      requireSimulator();
       const sub = subcommandName("pasteboard", pos[0]);
       try {
         if (sub === "get") ok({ value: simctl.pasteboardGet(udid) });
@@ -335,6 +393,7 @@ async function main() {
       } catch (e) { fail((e as Error).message); }
     }
     case "push": {
+      requireSimulator();
       let bundle: string | undefined;
       let payload: string | undefined;
       if (pos.length === 1) { payload = pos[0]; }
@@ -344,6 +403,7 @@ async function main() {
       catch (e) { fail((e as Error).message); }
     }
     case "record-video": {
+      requireSimulator();
       const sub = subcommandName("record-video", pos[0]);
       if (sub === "start") {
         const out = (flags.out as string) || join(tmpdir(), `sim-cli-${Date.now()}.mov`);
@@ -354,6 +414,7 @@ async function main() {
       }
     }
     case "status-bar": {
+      requireSimulator();
       const sub = subcommandName("status-bar", pos[0]);
       if (sub === "clear") {
         try { simctl.statusBarClear(udid); ok({ ok: true }); }
@@ -368,6 +429,7 @@ async function main() {
       }
     }
     case "crash": {
+      requireSimulator();
       const sub = subcommandName("crash", pos[0]);
       if (sub === "list") {
         ok(simctl.listCrashes({ bundle: flags.bundle as string | undefined }));
@@ -382,6 +444,7 @@ async function main() {
       }
     }
     case "stats": {
+      requireSimulator();
       if (!pos[0]) fail("stats requires <bundle_id>");
       const { udid: target, pid } = resolveAppPid(pos[0]);
       if (flags.watch) {
@@ -409,6 +472,7 @@ async function main() {
       });
     }
     case "hierarchy": {
+      requireSimulator();
       if (!pos[0]) fail("hierarchy requires <bundle_id>");
       const { pid } = resolveAppPid(pos[0]);
       try {
@@ -419,6 +483,7 @@ async function main() {
       } catch (e) { fail((e as Error).message); }
     }
     case "memory": {
+      requireSimulator();
       const subGiven = pos[0] ? resolveSubcommand(resolveCommand("memory")!, pos[0]) : undefined;
       const sub = subGiven?.name ?? "footprint";
       if (sub === "warn") {
@@ -439,6 +504,7 @@ async function main() {
       } catch (e) { fail((e as Error).message); }
     }
     case "sample": {
+      requireSimulator();
       if (!pos[0]) fail("sample requires <bundle_id>");
       const duration = flags.duration ? Number(flags.duration) : 2;
       const { pid } = resolveAppPid(pos[0]);
@@ -453,11 +519,13 @@ async function main() {
 
       const container = (flags.workspace || flags.project)
         ? { workspace: flags.workspace as string | undefined, project: flags.project as string | undefined }
-        : simctl.detectXcodeProject();
+        : xcode.detectXcodeProject();
       const scheme = (flags.scheme as string | undefined)
-        ?? (container.workspace || container.project ? simctl.detectScheme(container) : undefined);
+        ?? (container.workspace || container.project ? xcode.detectScheme(container) : undefined);
+      const platform: xcode.BuildPlatform = selectedTarget.kind === "physical" ? "device" : "simulator";
+      const destinationUdid = selectedTarget.kind === "physical" ? selectedTarget.udid : undefined;
 
-      let built: { workspace?: string; project?: string; scheme?: string; skipped?: boolean } | undefined;
+      let built: { workspace?: string; project?: string; scheme?: string; platform: xcode.BuildPlatform; destinationUdid?: string; skipped?: boolean } | undefined;
       let appPath = prebuilt;
       if (!prebuilt) {
         if (!container.workspace && !container.project) {
@@ -467,18 +535,37 @@ async function main() {
         let result: builds.EnsureResult;
         try {
           result = await builds.ensureBuilt(
-            { ...container, scheme, configuration: flags.configuration as string | undefined },
+            { ...container, scheme, configuration: flags.configuration as string | undefined, platform, destinationUdid },
             !!flags.force,
           );
         } catch (e) {
           fail((e as Error).message);
         }
         appPath = result.app;
-        built = { ...container, scheme, ...(result.skipped ? { skipped: true } : {}) };
+        built = { ...container, scheme, platform, ...(destinationUdid ? { destinationUdid } : {}), ...(result.skipped ? { skipped: true } : {}) };
       }
 
-      appPath ||= simctl.findDerivedApp(bundle);
+      appPath ||= xcode.findDerivedApp(bundle, platform);
       if (!appPath) fail(`No build artifact found for ${bundle} in DerivedData; pass --app <path>`);
+
+      const containerPath = container.workspace ?? container.project;
+      const fromScheme = (containerPath && scheme) ? parseScheme(containerPath, scheme) : { env: {}, args: [] };
+      const env = { ...fromScheme.env, ...parseEnvFlag(flags.env) };
+      const launchArgs = [...fromScheme.args, ...pos.slice(1)];
+
+      if (selectedTarget.kind === "physical") {
+        try {
+          devicectl.install(selectedTarget, appPath);
+          const launched = devicectl.launch(selectedTarget, bundle, launchArgs, env);
+          ok({
+            pid: launched.pid,
+            app: appPath,
+            ready: true,
+            target: { kind: selectedTarget.kind, name: selectedTarget.name, udid: selectedTarget.udid },
+            ...(built ? { built } : {}),
+          });
+        } catch (e) { fail((e as Error).message); }
+      }
 
       if (udid !== "booted") {
         try { simctl.boot(udid); }
@@ -491,10 +578,6 @@ async function main() {
       catch (e) { fail((e as Error).message); }
       simctl.install(udid, appPath);
 
-      const containerPath = container.workspace ?? container.project;
-      const fromScheme = (containerPath && scheme) ? parseScheme(containerPath, scheme) : { env: {}, args: [] };
-      const env = { ...fromScheme.env, ...parseEnvFlag(flags.env) };
-      const launchArgs = [...fromScheme.args, ...pos.slice(1)];
       const result = simctl.launch(udid, bundle, launchArgs, { env });
       const ready = await simctl.waitForRunning(udid, bundle);
       let logs: { pid: number; file: string } | undefined;
@@ -518,17 +601,23 @@ async function main() {
       });
     }
     case "logs": {
+      requireSimulator();
       const all = simctl.listCaptures();
       const filter = flags.device || flags.udid ? concreteUdid(udid) : undefined;
       ok(filter ? all.filter((c) => c.udid === filter) : all);
     }
     case "openurl": {
       if (!pos[0]) fail("openurl requires <url>");
-      simctl.openurl(udid, pos[0]); ok({ ok: true });
+      try {
+        if (selectedTarget.kind === "physical") await withClient((client) => companion.openUrl(client, pos[0]!));
+        else simctl.openurl(udid, pos[0]);
+        ok({ ok: true });
+      } catch (e) { fail((e as Error).message); }
     }
     case "screenshot": {
       const out = (flags.out as string) || join(tmpdir(), `sim-cli-${Date.now()}.png`);
-      simctl.screenshot(udid, out);
+      try { await captureScreenshot(out); }
+      catch (e) { fail((e as Error).message); }
       if (flags.base64) {
         const b64 = readFileSync(out).toString("base64");
         ok({ path: out, base64: b64 });
@@ -540,7 +629,7 @@ async function main() {
       const tree = await withClient((c) => companion.describe(c, point));
       if (flags.screenshot) {
         const out = join(tmpdir(), `sim-cli-${Date.now()}.png`);
-        simctl.screenshot(udid, out);
+        await captureScreenshot(out);
         const b64 = readFileSync(out).toString("base64");
         ok({ accessibility: tree, screenshot: { path: out, base64: b64 } });
       }

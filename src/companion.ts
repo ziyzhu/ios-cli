@@ -183,3 +183,21 @@ export function describe(
     });
   });
 }
+
+export function screenshot(client: any): Promise<{ data: Buffer; format: string }> {
+  return new Promise((resolve, reject) => {
+    client.screenshot({}, (error: any, response: any) => {
+      if (error) return reject(error);
+      resolve({
+        data: Buffer.isBuffer(response?.image_data) ? response.image_data : Buffer.from(response?.image_data ?? ""),
+        format: String(response?.image_format ?? "png"),
+      });
+    });
+  });
+}
+
+export function openUrl(client: any, url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    client.open_url({ url }, (error: any) => error ? reject(error) : resolve());
+  });
+}

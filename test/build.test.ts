@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { treeFingerprint } from "../src/build.ts";
+import { cacheKey, treeFingerprint } from "../src/build.ts";
+import { buildArgs } from "../src/xcode.ts";
 
 const dirs: string[] = [];
 
@@ -58,6 +59,23 @@ describe("treeFingerprint", () => {
     writeFileSync(join(repoDir, "main.swift"), "print(2)\n");
     git(repoDir, "commit", "-aqm", "edit");
     expect(treeFingerprint(repoDir)!).not.toBe(before);
+  });
+});
+
+describe("build destinations", () => {
+  const base = { project: "/tmp/Fake.xcodeproj", scheme: "Fake", configuration: "Debug" };
+
+  test("uses distinct Xcode SDKs and destinations", () => {
+    expect(buildArgs(base)).toContain("iphonesimulator");
+    expect(buildArgs({ ...base, platform: "device" })).toContain("generic/platform=iOS");
+    expect(buildArgs({ ...base, platform: "device", destinationUdid: "00008150-000E02901420401C" })).toContain("id=00008150-000E02901420401C");
+  });
+
+  test("separates simulator, generic device, and device-specific cache entries", () => {
+    const simulator = cacheKey(base);
+    const genericDevice = cacheKey({ ...base, platform: "device" });
+    const physicalDevice = cacheKey({ ...base, platform: "device", destinationUdid: "00008150-000E02901420401C" });
+    expect(new Set([simulator, genericDevice, physicalDevice]).size).toBe(3);
   });
 });
 

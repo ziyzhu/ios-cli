@@ -13,6 +13,7 @@ import * as builds from "./build.ts";
 import * as devicectl from "./devicectl.ts";
 import * as targets from "./target.ts";
 import * as xcode from "./xcode.ts";
+import { physicalLaunchEnvError } from "./launch-env.ts";
 import { overview, commandHelp, agentContext, resolveSubcommand, resolveCommand, enumError, ENUMS } from "./help.ts";
 
 type Flags = Record<string, string | boolean | string[]>;
@@ -522,6 +523,14 @@ async function main() {
         : xcode.detectXcodeProject();
       const scheme = (flags.scheme as string | undefined)
         ?? (container.workspace || container.project ? xcode.detectScheme(container) : undefined);
+      const containerPath = container.workspace ?? container.project;
+      const fromScheme = (containerPath && scheme) ? parseScheme(containerPath, scheme) : { env: {}, args: [] };
+      const env = { ...fromScheme.env, ...parseEnvFlag(flags.env) };
+      const launchArgs = [...fromScheme.args, ...pos.slice(1)];
+      if (selectedTarget.kind === "physical") {
+        const envError = physicalLaunchEnvError(env);
+        if (envError) fail(envError);
+      }
       const platform: xcode.BuildPlatform = selectedTarget.kind === "physical" ? "device" : "simulator";
       const destinationUdid = selectedTarget.kind === "physical" ? selectedTarget.udid : undefined;
 
@@ -547,11 +556,6 @@ async function main() {
 
       appPath ||= xcode.findDerivedApp(bundle, platform);
       if (!appPath) fail(`No build artifact found for ${bundle} in DerivedData; pass --app <path>`);
-
-      const containerPath = container.workspace ?? container.project;
-      const fromScheme = (containerPath && scheme) ? parseScheme(containerPath, scheme) : { env: {}, args: [] };
-      const env = { ...fromScheme.env, ...parseEnvFlag(flags.env) };
-      const launchArgs = [...fromScheme.args, ...pos.slice(1)];
 
       if (selectedTarget.kind === "physical") {
         try {

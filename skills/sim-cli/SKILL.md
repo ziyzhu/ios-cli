@@ -84,6 +84,7 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | `--force` | build even when the source tree is unchanged |
 
 Build errors are surfaced: on `xcodebuild` failure, the output lands in the `{"error": "..."}` payload.
+For physical targets, effective scheme and `--env` URLs using `localhost`, `127/8`, `::1`, or `0.0.0.0` fail before build/install. Override them with a device-reachable host using `--env KEY=VAL`; loopback still works normally in Simulator runs.
 
 ## Idiomatic flows
 
@@ -99,7 +100,7 @@ tail -f "$(sim logs | jq -r '.[0].file')" | jq -c 'select(.subsystem=="com.acme.
 **Run on a paired physical device**
 ```
 sim devices | jq '.physicalDevices'
-sim run com.acme.MyApp --device "My iPhone"
+sim run com.acme.MyApp --device "My iPhone" --env API_ENDPOINT=http://192.168.1.20:8000
 sim list-apps --device "My iPhone"
 ```
 The phone must be available, trusted, in Developer Mode, and covered by the app's signing configuration. Build/install/launch use `devicectl` and do not depend on idb.
@@ -139,6 +140,7 @@ memory_pressure | tail -3 && sysctl -n vm.swapusage
 
 - `tap`, `swipe`, `type`, `press`, `describe` go through `idb_companion`. If they hang or return `UNAVAILABLE`, the companion for that UDID isn't running — start it (see prerequisites).
 - Physical UI commands also go through idb. Apple's `devicectl` does not expose general accessibility or input automation; if the installed idb companion cannot resolve a CoreDevice phone, `sim` reports that limitation while build/install/launch/list-apps remain available.
+- Physical `run` rejects loopback launch URLs before build/install because they resolve on the phone, not the Mac. Pass a LAN-reachable or tunneled endpoint with `--env`.
 - Simulator state and host-process commands return an explicit Simulator-only error for physical targets.
 - The `booted` default errors out when more than one sim is booted. Prefer an explicit `--device <name|udid>` in multi-sim setups.
 - `run` waits for the app to register with launchd before returning (`ready: true/false`). If `ready` is false, the launch raced — re-launch.

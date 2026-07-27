@@ -168,7 +168,7 @@ export const COMMANDS: Command[] = [
       { name: "env", type: "string", metavar: "KEY=VAL", repeatable: true, desc: "app env var, overrides scheme value" },
       { name: "force", type: "bool", desc: "build even when the source tree is unchanged" },
     ],
-    notes: "The selected target determines the build: iphonesimulator + simctl for simulators, signed iphoneos + devicectl for physical devices. Physical devices must be paired, available, in Developer Mode, and provisioned. Simulator runs capture logs under ~/.sim-cli/logs; physical log capture is not yet supported. Build caching is target-aware (`built.skipped: true`; `--force` overrides).",
+    notes: "The selected target determines the build: iphonesimulator + simctl for simulators, signed iphoneos + devicectl for physical devices. Physical devices must be paired, available, in Developer Mode, and provisioned. A physical run fails before build/install when its effective launch environment contains a loopback URL such as localhost, 127/8, ::1, or 0.0.0.0; override scheme values with device-reachable URLs using `--env KEY=VAL`. Simulator runs capture logs under ~/.sim-cli/logs; physical log capture is not yet supported. Build caching is target-aware (`built.skipped: true`; `--force` overrides).",
   },
   {
     name: "openurl", group: "APP", summary: "open a URL / deep link",

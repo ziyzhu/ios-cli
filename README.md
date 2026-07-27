@@ -57,6 +57,16 @@ automation through `devicectl`. Physical UI commands therefore require a
 compatible idb companion; lifecycle commands remain available when idb cannot
 resolve a CoreDevice target.
 
+For a physical `run`, launch-environment URLs must be reachable from the phone.
+Scheme or `--env` values using `localhost`, `127/8`, `::1`, or `0.0.0.0` fail
+before the app is built or installed because those addresses refer to the phone,
+not the Mac. Override scheme values with the Mac's LAN address:
+
+```sh
+sim run com.acme.MyApp --device "My iPhone" \
+  --env API_ENDPOINT=http://192.168.1.20:8000
+```
+
 Help is progressively disclosed: `sim --help` prints a grouped command
 overview; `sim help <command>` (or `sim <command> --help`) discloses the
 flags and details for one command; `sim agent-context` returns the full

@@ -127,6 +127,15 @@ export function listApps(udid: Udid): unknown {
   return JSON.parse(r.stdout);
 }
 
+export function appExecutable(udid: Udid, bundleId: string): string {
+  const app = (listApps(udid) as Record<string, Record<string, unknown>>)[bundleId];
+  const executable = app?.CFBundleExecutable;
+  if (typeof executable !== "string" || executable.length === 0) {
+    throw new Error(`${bundleId} is not installed on ${udid}`);
+  }
+  return executable;
+}
+
 export function install(udid: Udid, path: string): void {
   ok(["install", udid, path]);
 }

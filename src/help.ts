@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = "2";
+export const SCHEMA_VERSION = "3";
 
 export const ENUMS = {
   appearance: ["light", "dark"],
@@ -8,6 +8,7 @@ export const ENUMS = {
   direction: ["up", "down", "left", "right"],
   edge: ["left", "right", "top", "bottom"],
   platform: ["simulator", "device"],
+  traceTemplate: ["time-profiler"],
   privacyAction: ["grant", "revoke", "reset"],
   privacyService: [
     "contacts", "contacts-limited", "calendar", "location", "location-always",
@@ -299,6 +300,24 @@ export const COMMANDS: Command[] = [
       { name: "out", type: "string", metavar: "file.txt", desc: "full call-tree output path (default tmp file)" },
     ],
     notes: "Non-intrusive (no attach pause). Returns the top-of-stack summary inline; the full call tree is in the output file.",
+  },
+  {
+    name: "trace", group: "DIAGNOSTICS", summary: "record a native Instruments performance trace",
+    flags: [
+      { name: "template", type: "string", enum: ENUMS.traceTemplate, default: "time-profiler", desc: "Instruments template for start" },
+      { name: "out", type: "string", metavar: "path", desc: "output package for start or XML file for export (default tmp path)" },
+      { name: "xpath", type: "string", metavar: "expression", desc: "XPath query for export; defaults to the table of contents" },
+    ],
+    subcommands: [
+      { name: "start", args: [
+        { name: "bundle_id", required: true, desc: "running app to attach" },
+      ], summary: "attach Instruments and wait until recording begins" },
+      { name: "stop", summary: "stop recording and wait for the trace package to finalize" },
+      { name: "export", args: [
+        { name: "file.trace", required: true, desc: "trace package to inspect" },
+      ], summary: "export the table of contents or an XPath query as XML" },
+    ],
+    notes: "start/stop are Simulator-only. The verified Time Profiler capture includes native potential-hang detection, 1ms call-stack sampling, run-loop events, and Points of Interest. Apple's Animation Hitches and SwiftUI instruments are not supported on Simulator in Xcode 26; use a physical device for those. Only one trace may run per simulator. export is host-only and emits the trace table of contents unless --xpath is supplied. Outputs must not already exist.",
   },
   {
     name: "screenshot", group: "OBSERVE", summary: "capture screen as PNG",

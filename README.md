@@ -135,6 +135,19 @@ physical targets.
 | `memory leaks <bundle_id> [--out file.txt]` | leaks scan — count + bytes inline, full report to file; briefly suspends the app |
 | `memory warn` | simulated memory warning, delivered device-wide |
 | `sample <bundle_id> [--duration s] [--out file.txt]` | CPU profile: 1ms call-stack sampling, no attach pause. Top-of-stack summary inline, full call tree to file. |
+| `trace start <bundle_id> [--template time-profiler] [--out file.trace]` | attach native Instruments and wait until recording has begun |
+| `trace stop` | stop Instruments and wait for the `.trace` package to finalize |
+| `trace export <file.trace> [--xpath expression] [--out file.xml]` | export the trace table of contents or an XPath query without invoking `xctrace` directly |
+
+`trace` is Simulator-only and resolves the app process from its bundle ID. Its
+verified Time Profiler capture includes native potential-hang detection, 1ms
+call-stack sampling, run-loop events, and Points of Interest. Apple's Animation
+Hitches and SwiftUI instruments are not supported on Simulator in Xcode 26; use
+a physical device for those. Only one trace can run per simulator, and an
+existing output package is never overwritten.
+Use `trace export` without `--xpath` first to discover the schemas present in a
+recording, then export the relevant table with the XPath shown in that table of
+contents.
 
 **Interact**
 

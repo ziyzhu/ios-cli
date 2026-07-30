@@ -59,6 +59,8 @@ Help is progressively disclosed across three layers — reach for the deepest on
 | View hierarchy (frames/layers) | `hierarchy <bundle_id> [--vc]` — lldb attach; suspends the app a few seconds, never mid-gesture |
 | Memory breakdown / leaks | `memory <bundle_id>` / `memory leaks <bundle_id>` / `memory warn` (device-wide warning) |
 | CPU profile (where time goes) | `sample <bundle_id> [--duration s]` — no attach pause |
+| Native performance trace | `trace start <bundle_id> [--template time-profiler] [--out file.trace]`, exercise one interaction, then `trace stop` — waits for recording readiness and finalization |
+| Inspect a native trace | `trace export <file.trace> [--xpath expression] [--out file.xml]` — defaults to the table of contents so schemas can be discovered first |
 | Wait for UI | `wait --id <id> [--timeout ms] [--stable ms] [--missing]` |
 | Tap (coords or label) | `tap <x> <y>` or `tap --label "Settings" --wait 5000 --stable 200` |
 | Swipe (atomic flick) | `swipe --direction up\|down\|left\|right [--edge left\|right\|top\|bottom] [--distance 0.55]`, or explicit coordinates |
@@ -136,12 +138,22 @@ memory_pressure | tail -3 && sysctl -n vm.swapusage
 
 **Capture state for analysis** — `describe --screenshot` returns both the AX tree and a base64 PNG in one shot, ideal for a single round-trip when investigating a screen.
 
+**Record native UI performance evidence** — keep the interaction deterministic and avoid other diagnostics while recording:
+```
+sim --device mango-qa-1 trace start ai.mango.app --template time-profiler --out /tmp/sidebar.trace
+sim --device mango-qa-1 swipe --direction right --edge left --distance 0.75 --duration 0.3
+sim --device mango-qa-1 trace stop
+```
+The Time Profiler trace includes native potential-hang detection, 1ms samples, run-loop events, and Points of Interest. Apple's Animation Hitches and SwiftUI instruments are not supported on Simulator in Xcode 26; use a physical device when those timelines are required. A `.trace` package is an Instruments artifact; open it in Instruments for detailed inspection.
+Run `sim trace export /tmp/sidebar.trace --out /tmp/sidebar-toc.xml` to inspect its available schemas without invoking `xctrace` directly, then repeat with `--xpath` for the relevant table.
+
 ## Gotchas
 
 - `tap`, `swipe`, `type`, `press`, `describe` go through `idb_companion`. If they hang or return `UNAVAILABLE`, the companion for that UDID isn't running — start it (see prerequisites).
 - Physical UI commands also go through idb. Apple's `devicectl` does not expose general accessibility or input automation; if the installed idb companion cannot resolve a CoreDevice phone, `sim` reports that limitation while build/install/launch/list-apps remain available.
 - Physical `run` rejects loopback launch URLs before build/install because they resolve on the phone, not the Mac. Pass a LAN-reachable or tunneled endpoint with `--env`.
 - Simulator state and host-process commands return an explicit Simulator-only error for physical targets.
+- `trace` is Simulator-only, allows one active recording per target, and never overwrites an existing `.trace` package. The first Instruments capture may require macOS performance-analysis permission.
 - The `booted` default errors out when more than one sim is booted. Prefer an explicit `--device <name|udid>` in multi-sim setups.
 - `run` waits for the app to register with launchd before returning (`ready: true/false`). If `ready` is false, the launch raced — re-launch.
 - `run` invokes `xcodebuild` every time unless you pass `--app <path>`. Build once, then `--app` for a fast inner loop.

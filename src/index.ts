@@ -13,6 +13,7 @@ import * as builds from "./build.ts";
 import * as devicectl from "./devicectl.ts";
 import * as targets from "./target.ts";
 import * as xcode from "./xcode.ts";
+import * as instruments from "./instruments.ts";
 import { physicalLaunchEnvError } from "./launch-env.ts";
 import { overview, commandHelp, agentContext, resolveSubcommand, resolveCommand, enumError, ENUMS } from "./help.ts";
 
@@ -127,6 +128,16 @@ async function main() {
     process.exit(0);
   }
   if (cmd === "agent-context") ok(agentContext());
+  if (cmd === "trace" && subcommandName("trace", pos[0]) === "export") {
+    if (!pos[1]) fail("trace export requires <file.trace>");
+    try {
+      ok(instruments.exportTrace({
+        input: pos[1],
+        out: flags.out as string | undefined,
+        xpath: flags.xpath as string | undefined,
+      }));
+    } catch (e) { fail((e as Error).message); }
+  }
   if (cmd === "build") {
     const container = (flags.workspace || flags.project)
       ? { workspace: flags.workspace as string | undefined, project: flags.project as string | undefined }
@@ -512,6 +523,32 @@ async function main() {
       const out = (flags.out as string) || join(tmpdir(), `sim-cli-sample-${Date.now()}.txt`);
       try { ok({ pid, duration, path: out, topOfStack: proc.samplePid(pid, duration, out) }); }
       catch (e) { fail((e as Error).message); }
+    }
+    case "trace": {
+      requireSimulator();
+      const sub = subcommandName("trace", pos[0]);
+      const target = concreteUdid(udid);
+      try {
+        if (sub === "start") {
+          const bundle = pos[1];
+          if (!bundle) fail("trace start requires <bundle_id>");
+          const template = (flags.template as string | undefined) ?? "time-profiler";
+          if (!ENUMS.traceTemplate.includes(template as any)) {
+            fail(enumError("trace template", template, ENUMS.traceTemplate));
+          }
+          const { pid } = resolveAppPid(bundle);
+          const process = simctl.appExecutable(target, bundle);
+          ok(await instruments.startTrace({
+            udid: target,
+            appPid: pid,
+            process,
+            bundle,
+            template: template as instruments.TraceTemplate,
+            out: flags.out as string | undefined,
+          }));
+        }
+        ok(await instruments.stopTrace(target));
+      } catch (e) { fail((e as Error).message); }
     }
     case "run": {
       if (!pos[0]) fail("run requires <bundle_id>");
